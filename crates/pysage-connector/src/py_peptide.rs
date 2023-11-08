@@ -1,10 +1,9 @@
-use std::sync::Arc;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use std::sync::Arc;
 
-use sage_core::peptide::Peptide;
 use crate::py_enzyme::{PyDigest, PyPosition};
-
+use sage_core::peptide::Peptide;
 
 #[pyclass]
 #[derive(Clone)]
@@ -15,18 +14,18 @@ pub struct PyPeptide {
 #[pymethods]
 impl PyPeptide {
     #[new]
-    pub fn new(decoy: bool,
-               sequence: String,
-               modifications: Vec<f32>,
-               mono_isotopic: f32,
-               missed_cleavages: u8,
-               position: PyPosition,
-               proteins: Vec<String>,
-               semi_enzymatic: bool,
-               n_term: Option<f32>,
-               c_term: Option<f32>,
-        ) -> PyResult<PyPeptide> {
-
+    pub fn new(
+        decoy: bool,
+        sequence: String,
+        modifications: Vec<f32>,
+        mono_isotopic: f32,
+        missed_cleavages: u8,
+        position: PyPosition,
+        proteins: Vec<String>,
+        semi_enzymatic: bool,
+        n_term: Option<f32>,
+        c_term: Option<f32>,
+    ) -> PyResult<PyPeptide> {
         let sequence_bytes = sequence.into_bytes(); // Convert the string to Vec<u8>
         let boxed_sequence = sequence_bytes.into_boxed_slice(); // Convert Vec<u8> to Box<[u8]>
         let arc_sequence = Arc::from(boxed_sequence); // Convert Box<[u8]> to Arc<[u8]> without dereferencing
@@ -46,7 +45,7 @@ impl PyPeptide {
                 position: position.inner,
                 proteins: arc_proteins,
                 semi_enzymatic,
-            }
+            },
         })
     }
 
@@ -94,7 +93,9 @@ impl PyPeptide {
 
     #[getter]
     pub fn position(&self) -> PyPosition {
-        PyPosition { inner: self.inner.position }
+        PyPosition {
+            inner: self.inner.position,
+        }
     }
 
     #[getter]
@@ -104,7 +105,7 @@ impl PyPeptide {
 
     pub fn reverse(&self) -> PyPeptide {
         PyPeptide {
-            inner: self.inner.reverse()
+            inner: self.inner.reverse(),
         }
     }
 }

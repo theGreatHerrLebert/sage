@@ -2,10 +2,10 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 
-use sage_core::scoring::{ Feature, Scorer };
-use crate::py_database::{ PyPeptideIx, PyIndexedDatabase };
+use crate::py_database::{PyIndexedDatabase, PyPeptideIx};
 use crate::py_mass::PyTolerance;
 use crate::py_spectrum::PyProcessedSpectrum;
+use sage_core::scoring::{Feature, Scorer};
 
 #[pyclass]
 #[derive(Clone)]
@@ -16,56 +16,87 @@ pub struct PyFeature {
 #[pymethods]
 impl PyFeature {
     #[new]
-    pub fn new(peptide_idx: PyPeptideIx, peptide_len: usize, spec_id: String, file_id: usize,
-               rank: u32, label: i32, expmass: f32, calcmass: f32, charge: u8, rt: f32,
-               aligned_rt: f32, predicted_rt: f32, delta_rt_model: f32, delta_mass: f32,
-               isotope_error: f32, average_ppm: f32, hyperscore: f64, delta_next: f64,
-               delta_best: f64, matched_peaks: u32, longest_b: u32, longest_y: u32,
-               longest_y_pct: f32, missed_cleavages: u8, matched_intensity_pct: f32,
-               scored_candidates: u32, poisson: f64, discriminant_score: f32,
-               posterior_error: f32, spectrum_q: f32, peptide_q: f32, protein_q: f32,
-               ms2_intensity: f32, ms1_intensity: f32) -> Self {
-        PyFeature { inner: Feature {
-            peptide_idx: peptide_idx.inner,
-            peptide_len,
-            spec_id,
-            file_id,
-            rank,
-            label,
-            expmass,
-            calcmass,
-            charge,
-            rt,
-            aligned_rt,
-            predicted_rt,
-            delta_rt_model,
-            delta_mass,
-            isotope_error,
-            average_ppm,
-            hyperscore,
-            delta_next,
-            delta_best,
-            matched_peaks,
-            longest_b,
-            longest_y,
-            longest_y_pct,
-            missed_cleavages,
-            matched_intensity_pct,
-            scored_candidates,
-            poisson,
-            discriminant_score,
-            posterior_error,
-            spectrum_q,
-            peptide_q,
-            protein_q,
-            ms2_intensity,
-            ms1_intensity,
-        }}
+    pub fn new(
+        peptide_idx: PyPeptideIx,
+        peptide_len: usize,
+        spec_id: String,
+        file_id: usize,
+        rank: u32,
+        label: i32,
+        expmass: f32,
+        calcmass: f32,
+        charge: u8,
+        rt: f32,
+        aligned_rt: f32,
+        predicted_rt: f32,
+        delta_rt_model: f32,
+        delta_mass: f32,
+        isotope_error: f32,
+        average_ppm: f32,
+        hyperscore: f64,
+        delta_next: f64,
+        delta_best: f64,
+        matched_peaks: u32,
+        longest_b: u32,
+        longest_y: u32,
+        longest_y_pct: f32,
+        missed_cleavages: u8,
+        matched_intensity_pct: f32,
+        scored_candidates: u32,
+        poisson: f64,
+        discriminant_score: f32,
+        posterior_error: f32,
+        spectrum_q: f32,
+        peptide_q: f32,
+        protein_q: f32,
+        ms2_intensity: f32,
+        ms1_intensity: f32,
+    ) -> Self {
+        PyFeature {
+            inner: Feature {
+                peptide_idx: peptide_idx.inner,
+                peptide_len,
+                spec_id,
+                file_id,
+                rank,
+                label,
+                expmass,
+                calcmass,
+                charge,
+                rt,
+                aligned_rt,
+                predicted_rt,
+                delta_rt_model,
+                delta_mass,
+                isotope_error,
+                average_ppm,
+                hyperscore,
+                delta_next,
+                delta_best,
+                matched_peaks,
+                longest_b,
+                longest_y,
+                longest_y_pct,
+                missed_cleavages,
+                matched_intensity_pct,
+                scored_candidates,
+                poisson,
+                discriminant_score,
+                posterior_error,
+                spectrum_q,
+                peptide_q,
+                protein_q,
+                ms2_intensity,
+                ms1_intensity,
+            },
         }
+    }
 
     #[getter]
     pub fn peptide_idx(&self) -> PyPeptideIx {
-        PyPeptideIx { inner: self.inner.peptide_idx }
+        PyPeptideIx {
+            inner: self.inner.peptide_idx,
+        }
     }
 
     #[getter]
@@ -304,10 +335,18 @@ impl PyScorer {
             wide_window: self.wide_window,
         };
         let features = scorer.score(&spectrum.inner);
-        features.into_iter().map(|f| PyFeature { inner: f }).collect()
+        features
+            .into_iter()
+            .map(|f| PyFeature { inner: f })
+            .collect()
     }
 
-    pub fn score_collection(&self, db: &PyIndexedDatabase, spectra: Vec<PyProcessedSpectrum>, num_threads: usize) -> Vec<Vec<PyFeature>> {
+    pub fn score_collection(
+        &self,
+        db: &PyIndexedDatabase,
+        spectra: Vec<PyProcessedSpectrum>,
+        num_threads: usize,
+    ) -> Vec<Vec<PyFeature>> {
         let scorer = Scorer {
             db: &db.inner,
             precursor_tol: self.precursor_tolerance.inner.clone(),
@@ -325,21 +364,32 @@ impl PyScorer {
             wide_window: self.wide_window,
         };
         // Configure the global thread pool to the desired number of threads
-        let pool = ThreadPoolBuilder::new().num_threads(num_threads).build().unwrap();
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .unwrap();
 
         let result = pool.install(|| {
-            spectra.par_iter().map(|spectrum| {
-                let features = scorer.score(&spectrum.inner);
-                features.into_iter().map(|f| PyFeature { inner: f }).collect()
-            }).collect()
+            spectra
+                .par_iter()
+                .map(|spectrum| {
+                    let features = scorer.score(&spectrum.inner);
+                    features
+                        .into_iter()
+                        .map(|f| PyFeature { inner: f })
+                        .collect()
+                })
+                .collect()
         });
 
         result
     }
 
-
-
-    pub fn score_chimera_fast(&self, db: &PyIndexedDatabase, query: &PyProcessedSpectrum) -> Vec<PyFeature> {
+    pub fn score_chimera_fast(
+        &self,
+        db: &PyIndexedDatabase,
+        query: &PyProcessedSpectrum,
+    ) -> Vec<PyFeature> {
         let scorer = Scorer {
             db: &db.inner,
             precursor_tol: self.precursor_tolerance.inner.clone(),
@@ -357,10 +407,17 @@ impl PyScorer {
             wide_window: self.wide_window,
         };
         let features = scorer.score_chimera_fast(&query.inner);
-        features.into_iter().map(|f| PyFeature { inner: f }).collect()
+        features
+            .into_iter()
+            .map(|f| PyFeature { inner: f })
+            .collect()
     }
 
-    pub fn score_standard(&self, db: &PyIndexedDatabase, query: &PyProcessedSpectrum) -> Vec<PyFeature> {
+    pub fn score_standard(
+        &self,
+        db: &PyIndexedDatabase,
+        query: &PyProcessedSpectrum,
+    ) -> Vec<PyFeature> {
         let scorer = Scorer {
             db: &db.inner,
             precursor_tol: self.precursor_tolerance.inner.clone(),
@@ -378,7 +435,10 @@ impl PyScorer {
             wide_window: self.wide_window,
         };
         let features = scorer.score_standard(&query.inner);
-        features.into_iter().map(|f| PyFeature { inner: f }).collect()
+        features
+            .into_iter()
+            .map(|f| PyFeature { inner: f })
+            .collect()
     }
 
     #[getter]
@@ -446,7 +506,6 @@ impl PyScorer {
         self.wide_window
     }
 }
-
 
 #[pymodule]
 pub fn scoring(_py: Python, m: &PyModule) -> PyResult<()> {

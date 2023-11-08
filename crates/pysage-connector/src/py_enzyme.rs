@@ -1,15 +1,14 @@
-use std::sync::Arc;
+use numpy::{IntoPyArray, PyArray2};
 use pyo3::prelude::*;
-use numpy::{PyArray2, IntoPyArray};
+use std::sync::Arc;
 
 use std::hash::Hash;
 
-use sage_core::enzyme::{Digest, Position, Enzyme, EnzymeParameters};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::Hasher;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PyList;
-
+use sage_core::enzyme::{Digest, Enzyme, EnzymeParameters, Position};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 
 #[pyclass]
 #[derive(Clone)]
@@ -21,22 +20,30 @@ pub struct PyPosition {
 impl PyPosition {
     #[staticmethod]
     fn nterm() -> Self {
-        PyPosition { inner: Position::Nterm }
+        PyPosition {
+            inner: Position::Nterm,
+        }
     }
 
     #[staticmethod]
     fn cterm() -> Self {
-        PyPosition { inner: Position::Cterm }
+        PyPosition {
+            inner: Position::Cterm,
+        }
     }
 
     #[staticmethod]
     fn full() -> Self {
-        PyPosition { inner: Position::Full }
+        PyPosition {
+            inner: Position::Full,
+        }
     }
 
     #[staticmethod]
     fn internal() -> Self {
-        PyPosition { inner: Position::Internal }
+        PyPosition {
+            inner: Position::Internal,
+        }
     }
 
     #[staticmethod]
@@ -136,7 +143,12 @@ pub struct PyEnzyme {
 #[pymethods]
 impl PyEnzyme {
     #[new]
-    fn new(cleave: &str, c_terminal: bool, semi_enzymatic: bool, skip_suffix: Option<char>) -> PyResult<Self> {
+    fn new(
+        cleave: &str,
+        c_terminal: bool,
+        semi_enzymatic: bool,
+        skip_suffix: Option<char>,
+    ) -> PyResult<Self> {
         match Enzyme::new(cleave, skip_suffix, c_terminal, semi_enzymatic) {
             Some(enzyme) => Ok(PyEnzyme { inner: enzyme }),
             None => Err(PyValueError::new_err("Failed to create Enzyme")),
@@ -163,10 +175,14 @@ impl PyEnzyme {
         let sites = self.inner.cleavage_sites(sequence);
 
         // Convert the Vec<Range<usize>> to Vec<usize> while flattening
-        let sites_flat: Vec<usize> = sites.into_iter().flat_map(|s| vec![s.site.start, s.site.end]).collect();
+        let sites_flat: Vec<usize> = sites
+            .into_iter()
+            .flat_map(|s| vec![s.site.start, s.site.end])
+            .collect();
 
         let rows = sites_flat.len() / 2;
-        let np_array: Py<PyArray2<usize>> = sites_flat.into_pyarray(py).reshape([rows, 2])?.to_owned();
+        let np_array: Py<PyArray2<usize>> =
+            sites_flat.into_pyarray(py).reshape([rows, 2])?.to_owned();
 
         Ok(np_array)
     }
@@ -209,7 +225,9 @@ impl PyEnzymeParameters {
     #[getter]
     fn enzyme(&self, _py: Python) -> PyResult<Option<PyEnzyme>> {
         match &self.inner.enyzme {
-            Some(enzyme) => Ok(Some(PyEnzyme { inner: enzyme.clone() })),
+            Some(enzyme) => Ok(Some(PyEnzyme {
+                inner: enzyme.clone(),
+            })),
             None => Ok(None),
         }
     }
@@ -218,10 +236,14 @@ impl PyEnzymeParameters {
         let sites = self.inner.cleavage_sites(sequence);
 
         // Convert the Vec<Range<usize>> to Vec<usize> while flattening
-        let sites_flat: Vec<usize> = sites.into_iter().flat_map(|s| vec![s.site.start, s.site.end]).collect();
+        let sites_flat: Vec<usize> = sites
+            .into_iter()
+            .flat_map(|s| vec![s.site.start, s.site.end])
+            .collect();
 
         let rows = sites_flat.len() / 2;
-        let np_array: Py<PyArray2<usize>> = sites_flat.into_pyarray(py).reshape([rows, 2])?.to_owned();
+        let np_array: Py<PyArray2<usize>> =
+            sites_flat.into_pyarray(py).reshape([rows, 2])?.to_owned();
 
         Ok(np_array)
     }
@@ -250,4 +272,3 @@ pub fn enzyme(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyEnzymeParameters>()?;
     Ok(())
 }
-

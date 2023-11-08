@@ -183,7 +183,6 @@ impl Enzyme {
 
 impl EnzymeParameters {
     pub fn cleavage_sites(&self, sequence: &str) -> Vec<DigestSite> {
-
         match &self.enyzme {
             Some(enzyme) => enzyme.cleavage_sites(sequence),
             None => {

@@ -1,23 +1,23 @@
 use pyo3::prelude::*;
 
+pub mod py_database;
 pub mod py_enzyme;
 pub mod py_fasta;
-pub mod py_database;
-pub mod py_mass;
-mod py_peptide;
 mod py_ion_series;
+pub mod py_mass;
 mod py_modification;
-mod py_spectrum;
+mod py_peptide;
 mod py_scoring;
+mod py_spectrum;
 
 use py_enzyme::enzyme;
-use py_mass::mass;
 use py_fasta::fasta;
-use py_peptide::peptide;
 use py_ion_series::ion_series;
+use py_mass::mass;
 use py_modification::modification;
-use py_spectrum::spectrum;
+use py_peptide::peptide;
 use py_scoring::scoring;
+use py_spectrum::spectrum;
 
 #[pymodule]
 fn pysage_connector(py: Python, m: &PyModule) -> PyResult<()> {

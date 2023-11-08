@@ -2,8 +2,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
-use sage_core::mass::{Tolerance, H2O, NH3, PROTON, NEUTRON,
-                      Composition, composition, monoisotopic};
+use sage_core::mass::{
+    composition, monoisotopic, Composition, Tolerance, H2O, NEUTRON, NH3, PROTON,
+};
 
 #[pyfunction]
 fn h2o() -> f32 {
@@ -74,7 +75,9 @@ impl PyComposition {
             total_composition.sulfur += py_comp.inner.sulfur;
         }
 
-        Ok(PyComposition { inner: total_composition })
+        Ok(PyComposition {
+            inner: total_composition,
+        })
     }
 
     #[staticmethod]
@@ -84,7 +87,7 @@ impl PyComposition {
             // Extract the first character
             let aa_char = aa.chars().next().unwrap(); // Safe to use unwrap here as we know it has exactly one character
             Ok(PyComposition {
-                inner: composition(aa_char as u8)
+                inner: composition(aa_char as u8),
             })
         } else {
             // Return an error if the string is not a single character
@@ -94,7 +97,6 @@ impl PyComposition {
         }
     }
 }
-
 
 #[pyclass]
 #[derive(Clone)]
@@ -109,7 +111,11 @@ impl PyTolerance {
         let tolerance = match (da, ppm) {
             (Some((lo, hi)), None) => Tolerance::Da(lo, hi),
             (None, Some((lo, hi))) => Tolerance::Ppm(lo, hi),
-            _ => return Err(PyValueError::new_err("Provide either da or ppm values, not both.")),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "Provide either da or ppm values, not both.",
+                ))
+            }
         };
 
         Ok(PyTolerance { inner: tolerance })

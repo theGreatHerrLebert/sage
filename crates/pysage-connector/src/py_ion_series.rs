@@ -1,7 +1,7 @@
-use pyo3::prelude::*;
-use sage_core::ion_series::{Kind, Ion};
-use sage_core::mass::monoisotopic;
 use crate::py_peptide::PyPeptide;
+use pyo3::prelude::*;
+use sage_core::ion_series::{Ion, Kind};
+use sage_core::mass::monoisotopic;
 
 #[pyclass]
 #[derive(Clone)]
@@ -20,9 +20,10 @@ impl PyKind {
             "x" => Ok(PyKind { inner: Kind::X }),
             "y" => Ok(PyKind { inner: Kind::Y }),
             "z" => Ok(PyKind { inner: Kind::Z }),
-            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Invalid Kind value: {}", kind),
-            )),
+            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Invalid Kind value: {}",
+                kind
+            ))),
         }
     }
     pub fn kind_as_string(&self) -> String {
@@ -49,7 +50,10 @@ impl PyIon {
     // Getter methods for accessing Ion properties
     #[getter]
     fn kind(&self) -> PyResult<PyKind> {
-        Ok(PyKind { inner: self.inner.kind })     }
+        Ok(PyKind {
+            inner: self.inner.kind,
+        })
+    }
 
     #[getter]
     fn monoisotopic_mass(&self) -> PyResult<f32> {
@@ -80,7 +84,10 @@ impl PyIonSeries {
             Kind::B => peptide.inner.nterm.unwrap_or_default(),
             Kind::C => peptide.inner.nterm.unwrap_or_default() + NH3,
 
-            Kind::X => peptide.inner.monoisotopic - peptide.inner.nterm.unwrap_or_default() + (C + O - NH3 + N + H),
+            Kind::X => {
+                peptide.inner.monoisotopic - peptide.inner.nterm.unwrap_or_default()
+                    + (C + O - NH3 + N + H)
+            }
             Kind::Y => peptide.inner.monoisotopic - peptide.inner.nterm.unwrap_or_default(),
             Kind::Z => peptide.inner.monoisotopic - peptide.inner.nterm.unwrap_or_default() - NH3,
         };
@@ -90,8 +97,7 @@ impl PyIonSeries {
             cumulative_mass,
             peptide,
         })
-
-   }
+    }
 
     #[getter]
     fn kind(&self) -> PyResult<PyKind> {
@@ -109,7 +115,6 @@ impl PyIonSeries {
     }
 
     pub fn get_ion_series(&self) -> PyResult<Vec<PyIon>> {
-
         let mut ions = Vec::new();
         let mut cm = self.cumulative_mass;
 
@@ -126,7 +131,7 @@ impl PyIonSeries {
                 inner: Ion {
                     kind: self.kind.inner.clone(),
                     monoisotopic_mass: cm,
-                }
+                },
             });
         }
         Ok(ions)

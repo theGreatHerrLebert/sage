@@ -1,8 +1,10 @@
+use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
-use numpy::{PyArray1, IntoPyArray};
 
-use sage_core::spectrum::{ Peak, Deisotoped, SpectrumProcessor, Precursor, RawSpectrum, Representation, ProcessedSpectrum };
 use crate::py_mass::PyTolerance;
+use sage_core::spectrum::{
+    Deisotoped, Peak, Precursor, ProcessedSpectrum, RawSpectrum, Representation, SpectrumProcessor,
+};
 
 #[pyclass]
 #[derive(Clone)]
@@ -15,11 +17,17 @@ impl PyRepresentation {
     #[new]
     pub fn new(representation: String) -> Self {
         match representation.as_str() {
-            "centroid" => PyRepresentation { inner: Representation::Centroid },
-            "profile" => PyRepresentation { inner: Representation::Profile },
-            _ => PyRepresentation { inner: Representation::Centroid },
+            "centroid" => PyRepresentation {
+                inner: Representation::Centroid,
+            },
+            "profile" => PyRepresentation {
+                inner: Representation::Profile,
+            },
+            _ => PyRepresentation {
+                inner: Representation::Centroid,
+            },
         }
-   }
+    }
 
     #[getter]
     pub fn representation_as_string(&self) -> String {
@@ -50,16 +58,18 @@ impl PyProcessedSpectrum {
         peaks: Vec<PyPeak>,
         total_ion_current: f32,
     ) -> Self {
-        PyProcessedSpectrum { inner: ProcessedSpectrum {
-            level,
-            id,
-            file_id,
-            scan_start_time,
-            ion_injection_time,
-            precursors: precursors.into_iter().map(|p| p.inner).collect(),
-            peaks: peaks.into_iter().map(|p| p.inner).collect(),
-            total_ion_current,
-        } }
+        PyProcessedSpectrum {
+            inner: ProcessedSpectrum {
+                level,
+                id,
+                file_id,
+                scan_start_time,
+                ion_injection_time,
+                precursors: precursors.into_iter().map(|p| p.inner).collect(),
+                peaks: peaks.into_iter().map(|p| p.inner).collect(),
+                total_ion_current,
+            },
+        }
     }
 
     #[getter]
@@ -89,12 +99,22 @@ impl PyProcessedSpectrum {
 
     #[getter]
     pub fn precursors(&self) -> Vec<PyPrecursor> {
-        self.inner.precursors.clone().into_iter().map(|p| PyPrecursor { inner: p }).collect()
+        self.inner
+            .precursors
+            .clone()
+            .into_iter()
+            .map(|p| PyPrecursor { inner: p })
+            .collect()
     }
 
     #[getter]
     pub fn peaks(&self) -> Vec<PyPeak> {
-        self.inner.peaks.clone().into_iter().map(|p| PyPeak { inner: p }).collect()
+        self.inner
+            .peaks
+            .clone()
+            .into_iter()
+            .map(|p| PyPeak { inner: p })
+            .collect()
     }
 
     #[getter]
@@ -109,9 +129,7 @@ impl PyProcessedSpectrum {
     pub fn in_isolation_window(&self, mz: f32) -> Option<bool> {
         self.inner.in_isolation_window(mz)
     }
-
 }
-
 
 #[pyclass]
 #[derive(Clone)]
@@ -122,32 +140,35 @@ pub struct PyRawSpectrum {
 #[pymethods]
 impl PyRawSpectrum {
     #[new]
-    pub fn new(file_id: usize,
-               ms_level: u8,
-               id: String,
-               precursors: Vec<PyPrecursor>,
-               representation: PyRepresentation,
-               scan_start_time: f32,
-               ion_injection_time: f32,
-               total_ion_current: f32,
-               mz: &PyArray1<f32>,
-               intensity: &PyArray1<f32>) -> Self {
-
+    pub fn new(
+        file_id: usize,
+        ms_level: u8,
+        id: String,
+        precursors: Vec<PyPrecursor>,
+        representation: PyRepresentation,
+        scan_start_time: f32,
+        ion_injection_time: f32,
+        total_ion_current: f32,
+        mz: &PyArray1<f32>,
+        intensity: &PyArray1<f32>,
+    ) -> Self {
         let mz_vec = unsafe { mz.as_array().to_vec() };
         let intensity_vec = unsafe { intensity.as_array().to_vec() };
 
-        PyRawSpectrum { inner: RawSpectrum {
-            file_id,
-            ms_level,
-            id,
-            precursors: precursors.into_iter().map(|p| p.inner).collect(),
-            representation: representation.inner,
-            scan_start_time,
-            ion_injection_time,
-            total_ion_current,
-            mz: mz_vec,
-            intensity: intensity_vec,
-        } }
+        PyRawSpectrum {
+            inner: RawSpectrum {
+                file_id,
+                ms_level,
+                id,
+                precursors: precursors.into_iter().map(|p| p.inner).collect(),
+                representation: representation.inner,
+                scan_start_time,
+                ion_injection_time,
+                total_ion_current,
+                mz: mz_vec,
+                intensity: intensity_vec,
+            },
+        }
     }
 
     #[getter]
@@ -167,12 +188,19 @@ impl PyRawSpectrum {
 
     #[getter]
     pub fn precursors(&self) -> Vec<PyPrecursor> {
-        self.inner.precursors.clone().into_iter().map(|p| PyPrecursor { inner: p }).collect()
+        self.inner
+            .precursors
+            .clone()
+            .into_iter()
+            .map(|p| PyPrecursor { inner: p })
+            .collect()
     }
 
     #[getter]
     pub fn representation(&self) -> PyRepresentation {
-        PyRepresentation { inner: self.inner.representation }
+        PyRepresentation {
+            inner: self.inner.representation,
+        }
     }
 
     #[getter]
@@ -196,11 +224,10 @@ impl PyRawSpectrum {
     }
 
     #[getter]
-    pub fn intensity(&self, py: Python) ->Py<PyArray1<f32>> {
+    pub fn intensity(&self, py: Python) -> Py<PyArray1<f32>> {
         self.inner.intensity.clone().into_pyarray(py).to_owned()
     }
 }
-
 
 #[pyclass]
 #[derive(PartialEq, Copy, Clone, Default, Debug)]
@@ -212,7 +239,9 @@ pub struct PyPeak {
 impl PyPeak {
     #[new]
     pub fn new(mass: f32, intensity: f32) -> Self {
-        PyPeak { inner: Peak { mass, intensity } }
+        PyPeak {
+            inner: Peak { mass, intensity },
+        }
     }
 
     #[getter]
@@ -235,13 +264,20 @@ pub struct PySpectrumProcessor {
 #[pymethods]
 impl PySpectrumProcessor {
     #[new]
-    pub fn new(take_top_n: usize, max_fragment_mz: f32, min_fragment_mz: f32, deisotope: bool) -> Self {
-        PySpectrumProcessor { inner: SpectrumProcessor {
-            take_top_n,
-            max_fragment_mz,
-            min_fragment_mz,
-            deisotope,
-        } }
+    pub fn new(
+        take_top_n: usize,
+        max_fragment_mz: f32,
+        min_fragment_mz: f32,
+        deisotope: bool,
+    ) -> Self {
+        PySpectrumProcessor {
+            inner: SpectrumProcessor {
+                take_top_n,
+                max_fragment_mz,
+                min_fragment_mz,
+                deisotope,
+            },
+        }
     }
 
     #[getter]
@@ -265,7 +301,9 @@ impl PySpectrumProcessor {
     }
 
     pub fn process(&self, spectrum: &PyRawSpectrum) -> PyProcessedSpectrum {
-        PyProcessedSpectrum { inner: self.inner.process(spectrum.inner.clone()) }
+        PyProcessedSpectrum {
+            inner: self.inner.process(spectrum.inner.clone()),
+        }
     }
 }
 
@@ -279,7 +317,14 @@ pub struct PyDeisotoped {
 impl PyDeisotoped {
     #[new]
     pub fn new(mz: f32, intensity: f32, charge: Option<u8>, envelope: Option<usize>) -> Self {
-        PyDeisotoped { inner: Deisotoped { mz, intensity, charge, envelope } }
+        PyDeisotoped {
+            inner: Deisotoped {
+                mz,
+                intensity,
+                charge,
+                envelope,
+            },
+        }
     }
 
     #[getter]
@@ -312,8 +357,22 @@ pub struct PyPrecursor {
 #[pymethods]
 impl PyPrecursor {
     #[new]
-    pub fn new(mz: f32, intensity: Option<f32>, charge: Option<u8>, spectrum_ref: Option<String>, isolation_window: Option<PyTolerance>) -> Self {
-        PyPrecursor { inner: Precursor { mz, intensity, charge, spectrum_ref, isolation_window: isolation_window.map(|t| t.inner) } }
+    pub fn new(
+        mz: f32,
+        intensity: Option<f32>,
+        charge: Option<u8>,
+        spectrum_ref: Option<String>,
+        isolation_window: Option<PyTolerance>,
+    ) -> Self {
+        PyPrecursor {
+            inner: Precursor {
+                mz,
+                intensity,
+                charge,
+                spectrum_ref,
+                isolation_window: isolation_window.map(|t| t.inner),
+            },
+        }
     }
 
     #[getter]
@@ -338,7 +397,10 @@ impl PyPrecursor {
 
     #[getter]
     pub fn isolation_window(&self) -> Option<PyTolerance> {
-        self.inner.isolation_window.clone().map(|t| PyTolerance { inner: t })
+        self.inner
+            .isolation_window
+            .clone()
+            .map(|t| PyTolerance { inner: t })
     }
 }
 
