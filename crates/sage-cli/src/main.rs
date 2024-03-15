@@ -9,11 +9,11 @@ use sage_core::mass::Tolerance;
 use sage_core::scoring::{Feature, Scorer};
 use sage_core::spectrum::{ProcessedSpectrum, SpectrumProcessor};
 use sage_core::tmt::TmtQuant;
-use std::path::PathBuf;
 use std::time::Instant;
 
 mod input;
 mod output;
+mod telemetry;
 
 struct Runner {
     database: IndexedDatabase,
@@ -191,24 +191,25 @@ impl Runner {
             self.parameters.deisotope,
         );
 
-        let bruker_extensions = ["d", "tdf", "tdf_bin"];
+        let bruker_extensions = [".d", ".tdf", ".tdf_bin"];
         let spectra = chunk
             .par_iter()
             .enumerate()
             .flat_map(|(idx, path)| {
-                let res = match path {
-                    path if bruker_extensions.contains(
-                        &PathBuf::from(path)
-                            .extension()
-                            .unwrap_or_default()
-                            .to_str()
-                            .unwrap_or_default(),
-                    ) =>
-                    {
-                        sage_cloudpath::util::read_tdf(path, chunk_idx * batch_size + idx)
-                    }
-                    _ => sage_cloudpath::util::read_mzml(path, chunk_idx * batch_size + idx, sn),
+                let file_id = chunk_idx * batch_size + idx;
+
+                let path_lower = path.to_lowercase();
+                let res = if path_lower.ends_with(".mgf.gz") || path_lower.ends_with(".mgf") {
+                    sage_cloudpath::util::read_mgf(path, file_id)
+                } else if bruker_extensions
+                    .iter()
+                    .any(|ext| path_lower.ends_with(ext))
+                {
+                    sage_cloudpath::util::read_tdf(path, file_id)
+                } else {
+                    sage_cloudpath::util::read_mzml(path, file_id, sn)
                 };
+
                 match res {
                     Ok(s) => {
                         log::trace!("- {}: read {} spectra", path, s.len());
@@ -238,7 +239,7 @@ impl Runner {
             .collect::<SageResults>()
     }
 
-    pub fn run(mut self, parallel: usize, parquet: bool) -> anyhow::Result<()> {
+    pub fn run(mut self, parallel: usize, parquet: bool) -> anyhow::Result<telemetry::Telemetry> {
         let scorer = Scorer {
             db: &self.database,
             precursor_tol: self.parameters.precursor_tol,
@@ -254,6 +255,7 @@ impl Runner {
             chimera: self.parameters.chimera,
             report_psms: self.parameters.report_psms,
             wide_window: self.parameters.wide_window,
+            annotate_matches: self.parameters.annotate_matches,
         };
 
         //Collect all results into a single container
@@ -273,6 +275,7 @@ impl Runner {
                 self.parameters.mzml_paths.len(),
             );
             let _ = sage_core::ml::retention_model::predict(&self.database, &mut outputs.features);
+            let _ = sage_core::ml::mobility_model::predict(&self.database, &mut outputs.features);
             Some(alignments)
         } else {
             None
@@ -335,6 +338,14 @@ impl Runner {
             path.write_bytes_sync(bytes)?;
             self.parameters.output_paths.push(path.to_string());
 
+            if self.parameters.annotate_matches {
+                let bytes =
+                    sage_cloudpath::parquet::serialize_matched_fragments(&outputs.features)?;
+                let path = self.make_path("matched_fragments.sage.parquet");
+                path.write_bytes_sync(bytes)?;
+                self.parameters.output_paths.push(path.to_string());
+            }
+
             if let Some(areas) = &areas {
                 let bytes =
                     sage_cloudpath::parquet::serialize_lfq(areas, &filenames, &self.database)?;
@@ -347,6 +358,13 @@ impl Runner {
             self.parameters
                 .output_paths
                 .push(self.write_features(&outputs.features, &filenames)?);
+
+            if self.parameters.annotate_matches {
+                self.parameters
+                    .output_paths
+                    .push(self.write_fragments(&outputs.features)?);
+            }
+
             if !outputs.quant.is_empty() {
                 self.parameters
                     .output_paths
@@ -377,7 +395,15 @@ impl Runner {
         info!("finished in {}s", run_time);
         info!("cite: \"Sage: An Open-Source Tool for Fast Proteomics Searching and Quantification at Scale\" https://doi.org/10.1021/acs.jproteome.3c00486");
 
-        Ok(())
+        let telemetry = telemetry::Telemetry::new(
+            self.parameters,
+            self.database.peptides.len(),
+            self.database.fragments.len(),
+            parquet,
+            run_time,
+        );
+
+        Ok(telemetry)
     }
 }
 
@@ -444,10 +470,22 @@ fn main() -> anyhow::Result<()> {
                 .help("Write search output in parquet format instead of tsv"),
         )
         .arg(
+            Arg::new("annotate-matches")
+                .long("annotate-matches")
+                .action(clap::ArgAction::SetTrue)
+                .help("Write matched fragments output file."),
+        )
+        .arg(
             Arg::new("write-pin")
                 .long("write-pin")
                 .action(clap::ArgAction::SetTrue)
                 .help("Write percolator-compatible `.pin` output files"),
+        )
+        .arg(
+            Arg::new("disable-telemetry")
+                .long("disable-telemetry-i-dont-want-to-improve-sage")
+                .action(clap::ArgAction::SetFalse)
+                .help("Disable sending telemetry data"),
         )
         .help_template(
             "{usage-heading} {usage}\n\n\
@@ -463,12 +501,20 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| num_cpus::get() as u16 / 2) as usize;
 
     let parquet = matches.get_one::<bool>("parquet").copied().unwrap_or(false);
+    let send_telemetry = matches
+        .get_one::<bool>("disable-telemetry")
+        .copied()
+        .unwrap_or(true);
 
     let input = Input::from_arguments(matches)?;
 
     let runner = input.build().and_then(Runner::new)?;
 
-    runner.run(parallel, parquet)?;
+    let tel = runner.run(parallel, parquet)?;
+
+    if send_telemetry {
+        tel.send();
+    }
 
     Ok(())
 }

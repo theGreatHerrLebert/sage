@@ -4,9 +4,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.14.7]
+### Added
+- Added columns missing from parquet output: `semi_enzymatic` and `missed_cleavages`
+### Changed
+- Fixed ion mobility parsing from some mzMLs
+- MGF paths were being lowercased prior to parsing
+
+## [v0.14.6]
+### Added
+- Support for MGF files
+- Support for writing ion mobility measurements to output files: `ion_mobility`, `predicted_mobility`, `delta_mobility` added to primary tsv and parquet reports. Ion mobility is predicted in a similar manner to RT, using a linear model trained on the data from the search.
+
+## [v0.14.5]
 ### Added
 - Support for semi-enzymatic digests (`database.enzyme.semi_enzymatic` parameter)
+- Ability to directly export matched fragment ions (e.g. for spectral library or rescoring) with the `--annotate-matches` CLI option. This is compatible with the `--parquet` CLI option as well. Annotations will be written to `matched_fragments.sage.tsv` or `matched_fragments.sage.parquet`
+- Sage sends basic telemetry data (version of Sage, run time, OS, # of CPU cores, # of peptides in database, whether LFQ is used) to a remote server. No information about your actual data is sent - e.g. identifications, quantities, organism, or modifications are NOT tracked or reported.  This data will be used to help focus efforts on improving Sage and figuring which features are most used. Please take a look at `crates/sage-cli/src/telemetry.rs` to see exactly what is sent! You can disable sending telemetry data  by using the `--disable-telemetry-i-dont-want-to-improve-sage` CLI flag.
+### Changed
+- Modified visibility on some crate internals to support the [sagepy project](https://github.com/theGreatHerrLebert/sagepy)
+- Added `psm_id` field to various output files to match the new `--annotate-matches` option.
+### Removed
+- Removed the `ms1_intensity` field from CSV output, since it is essentially useless
+
 
 ## [v0.14.4]
 ### Added

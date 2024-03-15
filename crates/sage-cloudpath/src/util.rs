@@ -1,5 +1,6 @@
 use crate::{read_and_execute, Error};
 use sage_core::spectrum::RawSpectrum;
+use serde::Serialize;
 use tokio::io::AsyncReadExt;
 
 pub fn read_mzml<S: AsRef<str>>(
@@ -21,6 +22,20 @@ pub fn read_tdf<S: AsRef<str>>(s: S, file_id: usize) -> Result<Vec<RawSpectrum>,
         Ok(t) => Ok(t),
         Err(e) => Err(Error::TDF(e)),
     }
+}
+
+pub fn read_mgf<S: AsRef<str>>(path: S, file_id: usize) -> Result<Vec<RawSpectrum>, Error> {
+    read_and_execute(path, |mut bf| async move {
+        let mut contents = String::new();
+        bf.read_to_string(&mut contents)
+            .await
+            .map_err(crate::Error::IO)?;
+        let res = crate::mgf::MgfReader::with_file_id(file_id).parse(contents);
+        match res {
+            Ok(m) => Ok(m),
+            Err(e) => Err(Error::MGF(e)),
+        }
+    })
 }
 
 pub fn read_fasta<S>(
@@ -53,5 +68,22 @@ where
         let mut contents = String::new();
         bf.read_to_string(&mut contents).await?;
         Ok(serde_json::from_str(&contents)?)
+    })
+}
+
+/// Send telemetry data
+pub fn send_data<T>(url: &str, data: &T) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    T: Serialize,
+{
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async {
+        let client = reqwest::ClientBuilder::default().https_only(true).build()?;
+        let res = client.post(url).json(data).send().await?;
+        res.error_for_status()?;
+        Ok(())
     })
 }
