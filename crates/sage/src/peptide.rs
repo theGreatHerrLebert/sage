@@ -307,29 +307,43 @@ impl Peptide {
         }
     }
 
-    pub fn reverse(&self) -> Peptide {
-        let mut pep = self.clone();
-        pep.decoy = !self.decoy;
-        let n = pep.sequence.len().saturating_sub(1);
-        if n > 1 {
-            let mut s = Vec::from(pep.sequence.as_ref());
-            s[1..n].reverse();
-            pep.sequence = Arc::from(s.into_boxed_slice());
-            pep.modifications[1..n].reverse();
-        }
-        pep
-    }
-
-    pub fn shuffle(&self, keep_ends: Option<bool>) -> Peptide {
+    pub fn reverse(&self, keep_ends: Option<bool>) -> Peptide {
         let mut pep = self.clone();
         pep.decoy = !self.decoy;
         let n = pep.sequence.len();
         if n > 1 {
             let mut s = Vec::from(pep.sequence.as_ref());
             let mut m = pep.modifications.clone();
+
+            if keep_ends.unwrap_or(false) {
+                let n_sub_1 = n.saturating_sub(1);
+                if n_sub_1 > 1 {
+                    // Reverse the elements between the first and last element
+                    s[1..n_sub_1].reverse();
+                    m[1..n_sub_1].reverse();
+                }
+            } else {
+                // Reverse the entire sequence
+                s.reverse();
+                m.reverse();
+            }
+
+            pep.sequence = Arc::from(s.into_boxed_slice());
+            pep.modifications = m;
+        }
+        pep
+    }
+
+    pub fn shuffle(&self, keep_ends: Option<bool>) -> Peptide {
+        let mut pep = self.clone();
+        pep.decoy = !pep.decoy;
+        let n = pep.sequence.len();
+        if n > 1 {
+            let mut s = Vec::from(pep.sequence.as_ref());
+            let mut m = pep.modifications.clone();
             let mut rng = thread_rng();
 
-            if let Some(true) = keep_ends {
+            if keep_ends.unwrap_or(false) {
                 if n > 2 {
                     let mut indices: Vec<usize> = (1..n-1).collect();
                     indices.shuffle(&mut rng);
@@ -677,7 +691,7 @@ mod test {
                 fwd,
                 rev
             );
-            assert_eq!(rev.reverse().to_string(), fwd.to_string());
+            assert_eq!(rev.reverse(Some(true)).to_string(), fwd.to_string());
         }
     }
 
