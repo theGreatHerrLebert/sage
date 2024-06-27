@@ -326,20 +326,39 @@ impl Peptide {
         let n = pep.sequence.len();
         if n > 1 {
             let mut s = Vec::from(pep.sequence.as_ref());
+            let mut m = pep.modifications.clone();
             let mut rng = thread_rng();
-            match keep_ends {
-                Some(true) if n > 2 => {
-                    // Shuffle the elements between the first and last element
-                    s[1..n-1].shuffle(&mut rng);
-                    pep.modifications[1..n-1].shuffle(&mut rng);
+
+            if let Some(true) = keep_ends {
+                if n > 2 {
+                    let mut indices: Vec<usize> = (1..n-1).collect();
+                    indices.shuffle(&mut rng);
+
+                    let mut s_shuffled = s.clone();
+                    let mut m_shuffled = m.clone();
+                    for (i, &idx) in indices.iter().enumerate() {
+                        s_shuffled[i + 1] = s[idx];
+                        m_shuffled[i + 1] = m[idx];
+                    }
+                    s[1..n-1].copy_from_slice(&s_shuffled[1..n-1]);
+                    m[1..n-1].copy_from_slice(&m_shuffled[1..n-1]);
                 }
-                _ => {
-                    // Shuffle the entire sequence
-                    s.shuffle(&mut rng);
-                    pep.modifications.shuffle(&mut rng);
+            } else {
+                let mut indices: Vec<usize> = (0..n).collect();
+                indices.shuffle(&mut rng);
+
+                let mut s_shuffled = s.clone();
+                let mut m_shuffled = m.clone();
+                for (i, &idx) in indices.iter().enumerate() {
+                    s_shuffled[i] = s[idx];
+                    m_shuffled[i] = m[idx];
                 }
+                s = s_shuffled;
+                m = m_shuffled;
             }
+
             pep.sequence = Arc::from(s.into_boxed_slice());
+            pep.modifications = m;
         }
         pep
     }
