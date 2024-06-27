@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+
 use crate::modification::ModificationSpecificity;
 use crate::{
     enzyme::{Digest, Position},
@@ -313,6 +316,30 @@ impl Peptide {
             s[1..n].reverse();
             pep.sequence = Arc::from(s.into_boxed_slice());
             pep.modifications[1..n].reverse();
+        }
+        pep
+    }
+
+    pub fn shuffle(&self, keep_ends: Option<bool>) -> Peptide {
+        let mut pep = self.clone();
+        pep.decoy = !self.decoy;
+        let n = pep.sequence.len();
+        if n > 1 {
+            let mut s = Vec::from(pep.sequence.as_ref());
+            let mut rng = thread_rng();
+            match keep_ends {
+                Some(true) if n > 2 => {
+                    // Shuffle the elements between the first and last element
+                    s[1..n-1].shuffle(&mut rng);
+                    pep.modifications[1..n-1].shuffle(&mut rng);
+                }
+                _ => {
+                    // Shuffle the entire sequence
+                    s.shuffle(&mut rng);
+                    pep.modifications.shuffle(&mut rng);
+                }
+            }
+            pep.sequence = Arc::from(s.into_boxed_slice());
         }
         pep
     }

@@ -88,6 +88,10 @@ pub struct Builder {
     pub generate_decoys: Option<bool>,
     /// Path to fasta database
     pub fasta: Option<String>,
+
+    /// Trying shuffle strategy for decoys instead of reversing
+    pub shuffle_decoys: Option<bool>,
+    pub shuffle_include_ends: Option<bool>,
 }
 
 impl Builder {
@@ -108,6 +112,8 @@ impl Builder {
             max_variable_mods: self.max_variable_mods.map(|x| x.max(1)).unwrap_or(2),
             generate_decoys: self.generate_decoys.unwrap_or(true),
             fasta: self.fasta.expect("A fasta file must be provided!"),
+            shuffle_decoys: self.shuffle_decoys.unwrap_or(false),
+            shuffle_include_ends: self.shuffle_include_ends.unwrap_or(false),
         }
     }
 
@@ -132,6 +138,8 @@ pub struct Parameters {
     pub decoy_tag: String,
     pub generate_decoys: bool,
     pub fasta: String,
+    pub shuffle_decoys: bool,
+    pub shuffle_include_ends: bool,
 }
 
 impl Parameters {
@@ -171,7 +179,16 @@ impl Parameters {
                     })
                     .flat_map(|peptide| {
                         if self.generate_decoys {
-                            vec![peptide.reverse(), peptide].into_iter()
+                            if self.shuffle_decoys {
+                                if self.shuffle_include_ends {
+                                    vec![peptide.shuffle(Some(true)), peptide].into_iter()
+                                }
+                                else {
+                                    vec![peptide.shuffle(Some(false)), peptide].into_iter()
+                                }
+                            } else {
+                                vec![peptide.reverse(), peptide].into_iter()
+                            }
                         } else {
                             vec![peptide].into_iter()
                         }
@@ -601,6 +618,8 @@ mod test {
             decoy_tag: "rev_".into(),
             generate_decoys: false,
             fasta: "none".into(),
+            shuffle_decoys: false,
+            shuffle_include_ends: false,
         };
 
         let peptides = params.digest(&fasta);
