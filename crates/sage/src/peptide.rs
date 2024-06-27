@@ -315,15 +315,15 @@ impl Peptide {
             let mut s = Vec::from(pep.sequence.as_ref());
             let mut m = pep.modifications.clone();
 
-            if keep_ends.unwrap_or(false) {
+            if keep_ends.unwrap_or(true) {
                 let n_sub_1 = n.saturating_sub(1);
                 if n_sub_1 > 1 {
-                    // Reverse the elements between the first and last element
+                    // only reverse the internal sequence, tryptic cleavage motive stays preserved
                     s[1..n_sub_1].reverse();
                     m[1..n_sub_1].reverse();
                 }
             } else {
-                // Reverse the entire sequence
+                // reverse the entire sequence (HLA?)
                 s.reverse();
                 m.reverse();
             }
@@ -343,7 +343,7 @@ impl Peptide {
             let mut m = pep.modifications.clone();
             let mut rng = thread_rng();
 
-            if keep_ends.unwrap_or(false) {
+            if keep_ends.unwrap_or(true) {
                 if n > 2 {
                     let mut indices: Vec<usize> = (1..n-1).collect();
                     indices.shuffle(&mut rng);
