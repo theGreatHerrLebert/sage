@@ -156,35 +156,12 @@ fn lnfact(n: u16) -> f64 {
     }
 }
 
-fn log_factorial(n: u16) -> f64 {
-    if n == 0 {
-        1.0
-    } else {
-        (1..=n).map(|x| x as f64).sum::<f64>().ln()
-    }
-}
-
-// hyperscore = np.log1p(dot_product) + 2 * logfactorial(i_min) + logfactorial(i_max) - logfactorial(i_min)
-
 impl Score {
     /// Calculate the X!Tandem hyperscore
     /// * `fact_table` is a precomputed vector of factorials
-    fn hyperscore_sage(&self) -> f64 {
-        let i = (self.summed_b + 1.0) as f64 * (self.summed_y + 1.0) as f64;
-        let score = i.ln() + lnfact(self.matched_b) + lnfact(self.matched_y);
-        if score.is_finite() {
-            score
-        } else {
-            255.0
-        }
-    }
-
     fn hyperscore(&self) -> f64 {
-        let log_i = (self.summed_y + self.summed_b + 1.0).ln() as f64;
-        let i_min = self.matched_b.min(self.matched_y);
-        let i_max = self.matched_b.max(self.matched_y);
-
-        let score = log_i + 2.0 * log_factorial(i_min) + log_factorial(i_max) - log_factorial(i_min);
+        let i = (self.summed_b + self.summed_y + 1.0) as f64;
+        let score = i.ln() + lnfact(self.matched_b) + lnfact(self.matched_y);
         if score.is_finite() {
             score
         } else {
