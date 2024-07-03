@@ -160,7 +160,7 @@ impl Score {
     /// Calculate the X!Tandem hyperscore
     /// * `fact_table` is a precomputed vector of factorials
     fn hyperscore(&self) -> f64 {
-        let i = (self.summed_b + self.summed_y + 1.0) as f64;
+        let i = (self.summed_b + 1.0) as f64 * (self.summed_y + 1.0) as f64;
         let score = i.ln() + lnfact(self.matched_b) + lnfact(self.matched_y);
         if score.is_finite() {
             score
