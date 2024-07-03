@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+
 use crate::modification::ModificationSpecificity;
 use crate::{
     enzyme::{Digest, Position},
@@ -304,15 +307,72 @@ impl Peptide {
         }
     }
 
-    pub fn reverse(&self) -> Peptide {
+    pub fn reverse(&self, keep_ends: Option<bool>) -> Peptide {
         let mut pep = self.clone();
         pep.decoy = !self.decoy;
-        let n = pep.sequence.len().saturating_sub(1);
+        let n = pep.sequence.len();
         if n > 1 {
             let mut s = Vec::from(pep.sequence.as_ref());
-            s[1..n].reverse();
+            let mut m = pep.modifications.clone();
+
+            if keep_ends.unwrap_or(true) {
+                let n_sub_1 = n.saturating_sub(1);
+                if n_sub_1 > 1 {
+                    // only reverse the internal sequence, tryptic cleavage motive stays preserved
+                    s[1..n_sub_1].reverse();
+                    m[1..n_sub_1].reverse();
+                }
+            } else {
+                // reverse the entire sequence (HLA?)
+                s.reverse();
+                m.reverse();
+            }
+
             pep.sequence = Arc::from(s.into_boxed_slice());
-            pep.modifications[1..n].reverse();
+            pep.modifications = m;
+        }
+        pep
+    }
+
+    pub fn shuffle(&self, keep_ends: Option<bool>) -> Peptide {
+        let mut pep = self.clone();
+        pep.decoy = !pep.decoy;
+        let n = pep.sequence.len();
+        if n > 1 {
+            let mut s = Vec::from(pep.sequence.as_ref());
+            let mut m = pep.modifications.clone();
+            let mut rng = thread_rng();
+
+            if keep_ends.unwrap_or(true) {
+                if n > 2 {
+                    let mut indices: Vec<usize> = (1..n-1).collect();
+                    indices.shuffle(&mut rng);
+
+                    let mut s_shuffled = s.clone();
+                    let mut m_shuffled = m.clone();
+                    for (i, &idx) in indices.iter().enumerate() {
+                        s_shuffled[i + 1] = s[idx];
+                        m_shuffled[i + 1] = m[idx];
+                    }
+                    s[1..n-1].copy_from_slice(&s_shuffled[1..n-1]);
+                    m[1..n-1].copy_from_slice(&m_shuffled[1..n-1]);
+                }
+            } else {
+                let mut indices: Vec<usize> = (0..n).collect();
+                indices.shuffle(&mut rng);
+
+                let mut s_shuffled = s.clone();
+                let mut m_shuffled = m.clone();
+                for (i, &idx) in indices.iter().enumerate() {
+                    s_shuffled[i] = s[idx];
+                    m_shuffled[i] = m[idx];
+                }
+                s = s_shuffled;
+                m = m_shuffled;
+            }
+
+            pep.sequence = Arc::from(s.into_boxed_slice());
+            pep.modifications = m;
         }
         pep
     }
@@ -631,7 +691,7 @@ mod test {
                 fwd,
                 rev
             );
-            assert_eq!(rev.reverse().to_string(), fwd.to_string());
+            assert_eq!(rev.reverse(Some(true)).to_string(), fwd.to_string());
         }
     }
 
