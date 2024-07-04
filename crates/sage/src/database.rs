@@ -181,16 +181,16 @@ impl Parameters {
                         if self.generate_decoys {
                             if self.shuffle_decoys {
                                 if self.keep_ends {
-                                    vec![peptide.shuffle(Some(false)), peptide].into_iter()
+                                    vec![peptide.shuffle(false), peptide].into_iter()
                                 }
                                 else {
-                                    vec![peptide.shuffle(Some(true)), peptide].into_iter()
+                                    vec![peptide.shuffle(true), peptide].into_iter()
                                 }
                             } else {
                                 if self.keep_ends {
-                                    vec![peptide.reverse(Some(true)), peptide].into_iter()
+                                    vec![peptide.reverse(true), peptide].into_iter()
                                 } else {
-                                vec![peptide.reverse(Some(false)), peptide].into_iter()
+                                vec![peptide.reverse(false), peptide].into_iter()
                             }
                         }
                     } else {

@@ -307,7 +307,7 @@ impl Peptide {
         }
     }
 
-    pub fn reverse(&self, keep_ends: Option<bool>) -> Peptide {
+    pub fn reverse(&self, keep_ends: bool) -> Peptide {
         let mut pep = self.clone();
         pep.decoy = !self.decoy;
         let n = pep.sequence.len();
@@ -315,7 +315,7 @@ impl Peptide {
             let mut s = Vec::from(pep.sequence.as_ref());
             let mut m = pep.modifications.clone();
 
-            if keep_ends.unwrap_or(true) {
+            if keep_ends {
                 let n_sub_1 = n.saturating_sub(1);
                 if n_sub_1 > 1 {
                     // only reverse the internal sequence, tryptic cleavage motive stays preserved
@@ -334,7 +334,7 @@ impl Peptide {
         pep
     }
 
-    pub fn shuffle(&self, keep_ends: Option<bool>) -> Peptide {
+    pub fn shuffle(&self, keep_ends: bool) -> Peptide {
         let mut pep = self.clone();
         pep.decoy = !pep.decoy;
         let n = pep.sequence.len();
@@ -343,7 +343,7 @@ impl Peptide {
             let mut m = pep.modifications.clone();
             let mut rng = thread_rng();
 
-            if keep_ends.unwrap_or(true) {
+            if keep_ends {
                 if n > 2 {
                     let mut indices: Vec<usize> = (1..n-1).collect();
                     indices.shuffle(&mut rng);
@@ -691,7 +691,7 @@ mod test {
                 fwd,
                 rev
             );
-            assert_eq!(rev.reverse(Some(true)).to_string(), fwd.to_string());
+            assert_eq!(rev.reverse(true).to_string(), fwd.to_string());
         }
     }
 
