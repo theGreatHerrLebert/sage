@@ -183,7 +183,6 @@ impl Score {
         }
     }
      */
-    /*
     fn hyperscore(&self) -> f64 {
         let summed_intensity = self.summed_b + self.summed_y;
         let i_min = min(self.matched_y, self.matched_b) as f64;
@@ -198,8 +197,7 @@ impl Score {
             255.0
         }
     }
-     */
-
+    /*
     fn hyperscore(&self) -> f64 {
         let i = self.summed_b as f64 + self.summed_y as f64;
         let score = i.ln_1p() + (self.matched_b + self.matched_y) as f64;
@@ -209,6 +207,7 @@ impl Score {
             255.0
         }
     }
+     */
 }
 
 pub struct Scorer<'db> {
