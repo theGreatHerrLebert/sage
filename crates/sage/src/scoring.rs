@@ -1,3 +1,4 @@
+use std::cmp::{max, min};
 use crate::database::{IndexedDatabase, PeptideIx};
 use crate::heap::bounded_min_heapify;
 use crate::ion_series::{IonSeries, Kind};
@@ -156,12 +157,40 @@ fn lnfact(n: u16) -> f64 {
     }
 }
 
+fn log_factorial(n: u16, base: u16) -> f64 {
+
+    let base = max(base, 2);
+    let mut result = 0.0;
+
+    for i in (base..=n).rev() {
+        result += i as f64;
+    }
+
+    result
+}
+
 impl Score {
     /// Calculate the X!Tandem hyperscore
     /// * `fact_table` is a precomputed vector of factorials
+    /*
     fn hyperscore(&self) -> f64 {
         let i = (self.summed_b + 1.0) as f64 * (self.summed_y + 1.0) as f64;
         let score = i.ln() + lnfact(self.matched_b) + lnfact(self.matched_y);
+        if score.is_finite() {
+            score
+        } else {
+            255.0
+        }
+    }
+     */
+
+    fn hyperscore(&self) -> f64 {
+        let summed_intensity = self.summed_b + self.summed_y;
+        let i_min = min(self.matched_y, self.matched_b) as f64;
+        let i_max = max(self.matched_y, self.matched_b) as f64;
+
+        let score = summed_intensity.ln_1p() as f64 + 2.0 * log_factorial(i_min as u16, 2) + log_factorial(i_max as u16, i_min as u16 + 1);
+
         if score.is_finite() {
             score
         } else {
