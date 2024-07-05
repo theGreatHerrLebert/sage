@@ -157,13 +157,13 @@ fn lnfact(n: u16) -> f64 {
     }
 }
 
-fn log_factorial(n: u16, base: u16) -> f64 {
+fn log_factorial(n: u16, k: u16) -> f64 {
 
-    let base = max(base, 2);
+    let k = max(k, 2);
     let mut result = 0.0;
 
-    for i in (base..=n).rev() {
-        result += i as f64;
+    for i in (k..=n).rev() {
+        result += (i as f64).ln();
     }
 
     result
@@ -188,7 +188,8 @@ impl Score {
         let i_min = min(self.matched_y, self.matched_b) as f64;
         let i_max = max(self.matched_y, self.matched_b) as f64;
 
-        let score = summed_intensity.ln_1p() as f64 + 2.0 * log_factorial(i_min as u16, 2) + log_factorial(i_max as u16, i_min as u16 + 1);
+        let score = summed_intensity.ln_1p() as f64 + 2.0 * log_factorial(i_min as u16, 2) +
+            log_factorial(i_max as u16, i_min as u16 + 1);
 
         if score.is_finite() {
             score
