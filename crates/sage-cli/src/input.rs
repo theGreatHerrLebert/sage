@@ -30,6 +30,8 @@ pub struct Search {
     pub predict_rt: bool,
     pub mzml_paths: Vec<String>,
     pub output_paths: Vec<String>,
+    pub shuffle_decoys: Option<bool>,
+    pub keep_ends: Option<bool>,
 
     #[serde(skip_serializing)]
     pub output_directory: CloudPath,
@@ -64,6 +66,9 @@ pub struct Input {
 
     annotate_matches: Option<bool>,
     write_pin: Option<bool>,
+
+    shuffle_decoys: Option<bool>,
+    keep_ends: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -305,6 +310,8 @@ impl Input {
             predict_rt: self.predict_rt.unwrap_or(true),
             output_paths: Vec::new(),
             write_pin: self.write_pin.unwrap_or(false),
+            shuffle_decoys: self.shuffle_decoys,
+            keep_ends: self.keep_ends,
         })
     }
 }
