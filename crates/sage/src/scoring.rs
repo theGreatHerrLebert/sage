@@ -183,6 +183,7 @@ impl Score {
         }
     }
      */
+    /*
     fn hyperscore(&self) -> f64 {
         let summed_intensity = self.summed_b + self.summed_y;
         let i_min = min(self.matched_y, self.matched_b) as f64;
@@ -191,6 +192,17 @@ impl Score {
         let score = summed_intensity.ln_1p() as f64 + 2.0 * log_factorial(i_min as u16, 2) +
             log_factorial(i_max as u16, i_min as u16 + 1);
 
+        if score.is_finite() {
+            score
+        } else {
+            255.0
+        }
+    }
+     */
+
+    fn hyperscore(&self) -> f64 {
+        let i = self.summed_b as f64 + self.summed_y as f64;
+        let score = i.ln_1p() + (self.matched_b + self.matched_y) as f64;
         if score.is_finite() {
             score
         } else {
