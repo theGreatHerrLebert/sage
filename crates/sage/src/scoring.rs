@@ -183,7 +183,6 @@ impl Score {
         }
     }
      */
-
     fn hyperscore(&self) -> f64 {
         let summed_intensity = self.summed_b + self.summed_y;
         let i_min = min(self.matched_y, self.matched_b) as f64;
