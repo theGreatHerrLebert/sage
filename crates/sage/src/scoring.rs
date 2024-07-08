@@ -15,6 +15,24 @@ pub enum ScoreType {
     HappyHyperScore,
 }
 
+impl ScoreType {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "sage" => ScoreType::SageHyperScore,
+            "openms" => ScoreType::OpenMsHyperScore,
+            "happy" => ScoreType::HappyHyperScore,
+            _ => panic!("unknown score type"),
+        }
+    }
+    pub fn to_str(&self) -> &str {
+        match self {
+            ScoreType::SageHyperScore => "Sage",
+            ScoreType::OpenMsHyperScore => "OpenMS",
+            ScoreType::HappyHyperScore => "happy",
+        }
+    }
+}
+
 /// Structure to hold temporary scores
 #[derive(Copy, Clone, Default, Debug)]
 struct Score {
