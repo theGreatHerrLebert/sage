@@ -4,9 +4,16 @@ use crate::heap::bounded_min_heapify;
 use crate::ion_series::{IonSeries, Kind};
 use crate::mass::{Tolerance, NEUTRON, PROTON};
 use crate::spectrum::{Precursor, ProcessedSpectrum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::ops::AddAssign;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub enum ScoreType {
+    SageHyperScore,
+    OpenMsHyperScore,
+    HappyHyperScore,
+}
 
 /// Structure to hold temporary scores
 #[derive(Copy, Clone, Default, Debug)]
@@ -169,45 +176,43 @@ fn log_factorial(n: u16, k: u16) -> f64 {
     result
 }
 
+fn openms_hyper_score(matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
+    let summed_intensity = summed_b + summed_y;
+    let i_min = min(matched_y, matched_b) as f64;
+    let i_max = max(matched_y, matched_b) as f64;
+
+    let score = summed_intensity.ln_1p() as f64 + 2.0 * log_factorial(i_min as u16, 2) +
+        log_factorial(i_max as u16, i_min as u16 + 1);
+    score
+}
+
+/// Calculate the X!Tandem hyperscore
+/// * `fact_table` is a precomputed vector of factorials
+fn sage_hyper_score(matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
+    let i = (summed_b + 1.0) as f64 * (summed_y + 1.0) as f64;
+    let score = i.ln() + lnfact(matched_b) + lnfact(matched_y);
+    score
+}
+
+fn happy_score(matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
+    let i = summed_b as f64 + summed_y as f64;
+    let score = i.ln_1p() + (matched_b + matched_y) as f64;
+    score
+}
+
 impl Score {
-    /// Calculate the X!Tandem hyperscore
-    /// * `fact_table` is a precomputed vector of factorials
-    /*
-    fn hyperscore(&self) -> f64 {
-        let i = (self.summed_b + 1.0) as f64 * (self.summed_y + 1.0) as f64;
-        let score = i.ln() + lnfact(self.matched_b) + lnfact(self.matched_y);
+    fn hyperscore(&self, score_type: ScoreType) -> f64 {
+        let score = match score_type {
+            ScoreType::SageHyperScore => sage_hyper_score(self.matched_b, self.matched_y, self.summed_b, self.summed_y),
+            ScoreType::OpenMsHyperScore => openms_hyper_score(self.matched_b, self.matched_y, self.summed_b, self.summed_y),
+            ScoreType::HappyHyperScore => happy_score(self.matched_b, self.matched_y, self.summed_b, self.summed_y),
+        };
         if score.is_finite() {
             score
         } else {
             255.0
         }
     }
-     */
-    fn hyperscore(&self) -> f64 {
-        let summed_intensity = self.summed_b + self.summed_y;
-        let i_min = min(self.matched_y, self.matched_b) as f64;
-        let i_max = max(self.matched_y, self.matched_b) as f64;
-
-        let score = summed_intensity.ln_1p() as f64 + 2.0 * log_factorial(i_min as u16, 2) +
-            log_factorial(i_max as u16, i_min as u16 + 1);
-
-        if score.is_finite() {
-            score
-        } else {
-            255.0
-        }
-    }
-    /*
-    fn hyperscore(&self) -> f64 {
-        let i = self.summed_b as f64 + self.summed_y as f64;
-        let score = i.ln_1p() + (self.matched_b + self.matched_y) as f64;
-        if score.is_finite() {
-            score
-        } else {
-            255.0
-        }
-    }
-     */
 }
 
 pub struct Scorer<'db> {
@@ -232,6 +237,7 @@ pub struct Scorer<'db> {
     // the precursor tolerance window based on MS2 isolation window and charge
     pub wide_window: bool,
     pub annotate_matches: bool,
+    pub score_type: Option<ScoreType>,
 }
 
 #[inline(always)]
@@ -681,7 +687,7 @@ impl<'db> Scorer<'db> {
             }
         }
 
-        score.hyperscore = score.hyperscore();
+        score.hyperscore = score.hyperscore(self.score_type.unwrap_or(ScoreType::OpenMsHyperScore));
         score.longest_b = b_run.longest;
         score.longest_y = y_run.longest;
         score.ppm_difference /= score.summed_b + score.summed_y;

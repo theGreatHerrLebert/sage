@@ -8,6 +8,7 @@ use sage_core::{
     tmt::Isobaric,
 };
 use serde::{Deserialize, Serialize};
+use sage_core::scoring::ScoreType;
 
 #[derive(Serialize)]
 /// Actual search parameters - may include overrides or default values not set by user
@@ -32,6 +33,7 @@ pub struct Search {
     pub output_paths: Vec<String>,
     pub shuffle_decoys: Option<bool>,
     pub keep_ends: Option<bool>,
+    pub score_type: Option<ScoreType>,
 
     #[serde(skip_serializing)]
     pub output_directory: CloudPath,
@@ -69,6 +71,7 @@ pub struct Input {
 
     shuffle_decoys: Option<bool>,
     keep_ends: Option<bool>,
+    score_type: Option<ScoreType>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -312,6 +315,7 @@ impl Input {
             write_pin: self.write_pin.unwrap_or(false),
             shuffle_decoys: self.shuffle_decoys,
             keep_ends: self.keep_ends,
+            score_type: self.score_type,
         })
     }
 }
