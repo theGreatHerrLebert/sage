@@ -33,6 +33,7 @@ fn integration() -> anyhow::Result<()> {
         report_psms: 1,
         wide_window: false,
         annotate_matches: false,
+        score_type: Some(sage_core::scoring::ScoreType::SageHyperScore),
     };
 
     let psm = scorer.score(&processed);
