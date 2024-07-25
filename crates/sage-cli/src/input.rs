@@ -8,6 +8,7 @@ use sage_core::{
     tmt::Isobaric,
 };
 use serde::{Deserialize, Serialize};
+use sage_core::scoring::ScoreType;
 
 #[derive(Serialize)]
 /// Actual search parameters - may include overrides or default values not set by user
@@ -39,6 +40,9 @@ pub struct Search {
 
     #[serde(skip_serializing)]
     pub annotate_matches: bool,
+
+    #[serde(skip_serializing)]
+    pub score_type: ScoreType,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +68,7 @@ pub struct Input {
 
     annotate_matches: Option<bool>,
     write_pin: Option<bool>,
+    score_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -283,6 +288,21 @@ impl Input {
             None => CloudPath::Local(std::env::current_dir()?),
         };
 
+        let score_type = match self.score_type {
+            Some(s) => {
+                // check if s in ["sage_hyperscore", "openms_hyperscore"]
+                match s.to_lowercase().as_str() {
+                    "sage_hyperscore" => ScoreType::SageHyperScore,
+                    "openms_hyperscore" => ScoreType::OpenMSHyperScore,
+                    _ => {
+                        log::warn!("Invalid score type: {}. Supported values are: 'sage_hyperscore', 'openms_hyperscore', defaulting to sage_hyperscore", s);
+                        ScoreType::SageHyperScore
+                    }
+                }
+            }
+            None => ScoreType::SageHyperScore,
+        };
+
         Ok(Search {
             version: clap::crate_version!().into(),
             database,
@@ -305,6 +325,7 @@ impl Input {
             predict_rt: self.predict_rt.unwrap_or(true),
             output_paths: Vec::new(),
             write_pin: self.write_pin.unwrap_or(false),
+            score_type,
         })
     }
 }
