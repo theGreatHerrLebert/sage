@@ -41,7 +41,6 @@ pub struct Search {
     #[serde(skip_serializing)]
     pub annotate_matches: bool,
 
-    #[serde(skip_serializing)]
     pub score_type: ScoreType,
 }
 
@@ -68,7 +67,7 @@ pub struct Input {
 
     annotate_matches: Option<bool>,
     write_pin: Option<bool>,
-    score_type: Option<String>,
+    score_type: Option<ScoreType>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -288,20 +287,7 @@ impl Input {
             None => CloudPath::Local(std::env::current_dir()?),
         };
 
-        let score_type = match self.score_type {
-            Some(s) => {
-                // check if s in ["sage_hyperscore", "openms_hyperscore"]
-                match s.to_lowercase().as_str() {
-                    "sage_hyperscore" => ScoreType::SageHyperScore,
-                    "openms_hyperscore" => ScoreType::OpenMSHyperScore,
-                    _ => {
-                        log::warn!("Invalid score type: {}. Supported values are: 'sage_hyperscore', 'openms_hyperscore', defaulting to sage_hyperscore", s);
-                        ScoreType::SageHyperScore
-                    }
-                }
-            }
-            None => ScoreType::SageHyperScore,
-        };
+        let score_type = self.score_type.unwrap_or(ScoreType::SageHyperScore);
 
         Ok(Search {
             version: clap::crate_version!().into(),
