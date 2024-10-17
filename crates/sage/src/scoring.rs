@@ -1,4 +1,3 @@
-use std::cmp::{max, min};
 use crate::database::{IndexedDatabase, PeptideIx};
 use crate::heap::bounded_min_heapify;
 use crate::ion_series::{IonSeries, Kind};
@@ -11,24 +10,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum ScoreType {
     SageHyperScore,
-    OpenMsHyperScore,
-    HappyHyperScore,
+    OpenMSHyperScore,
 }
 
 impl ScoreType {
     pub fn from_str(s: &str) -> Self {
         match s {
             "sage" => ScoreType::SageHyperScore,
-            "openms" => ScoreType::OpenMsHyperScore,
-            "happy" => ScoreType::HappyHyperScore,
+            "openms" => ScoreType::OpenMSHyperScore,
             _ => panic!("unknown score type"),
         }
     }
     pub fn to_str(&self) -> &str {
         match self {
             ScoreType::SageHyperScore => "Sage",
-            ScoreType::OpenMsHyperScore => "OpenMS",
-            ScoreType::HappyHyperScore => "happy",
+            ScoreType::OpenMSHyperScore => "OpenMS",
         }
     }
 }
@@ -182,54 +178,34 @@ fn lnfact(n: u16) -> f64 {
     }
 }
 
-fn log_factorial(n: u16, k: u16) -> f64 {
-
-    let k = max(k, 2);
-    let mut result = 0.0;
-
-    for i in (k..=n).rev() {
-        result += (i as f64).ln();
-    }
-
-    result
-}
-
-fn openms_hyper_score(matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
-    let summed_intensity = summed_b + summed_y;
-    let i_min = min(matched_y, matched_b) as f64;
-    let i_max = max(matched_y, matched_b) as f64;
-
-    let score = summed_intensity.ln_1p() as f64 + 2.0 * log_factorial(i_min as u16, 2) +
-        log_factorial(i_max as u16, i_min as u16 + 1);
-    score
-}
-
-/// Calculate the X!Tandem hyperscore
-/// * `fact_table` is a precomputed vector of factorials
-fn sage_hyper_score(matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
-    let i = (summed_b + 1.0) as f64 * (summed_y + 1.0) as f64;
-    let score = i.ln() + lnfact(matched_b) + lnfact(matched_y);
-    score
-}
-
-fn happy_score(matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
-    let i = summed_b as f64 + summed_y as f64;
-    let score = i.ln_1p() + (matched_b + matched_y) as f64;
-    score
-}
-
-impl Score {
-    fn hyperscore(&self, score_type: ScoreType) -> f64 {
-        let score = match score_type {
-            ScoreType::SageHyperScore => sage_hyper_score(self.matched_b, self.matched_y, self.summed_b, self.summed_y),
-            ScoreType::OpenMsHyperScore => openms_hyper_score(self.matched_b, self.matched_y, self.summed_b, self.summed_y),
-            ScoreType::HappyHyperScore => happy_score(self.matched_b, self.matched_y, self.summed_b, self.summed_y),
+impl ScoreType {
+    pub fn score(&self, matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
+        let score = match self {
+            // Calculate the X!Tandem hyperscore
+            Self::SageHyperScore => {
+                let i = (summed_b + 1.0) as f64 * (summed_y + 1.0) as f64;
+                let score = i.ln() + lnfact(matched_b) + lnfact(matched_y);
+                score
+            }
+            // Calculate the OpenMS flavour hyperscore
+            Self::OpenMSHyperScore => {
+                let summed_intensity = summed_b + summed_y;
+                let score = summed_intensity.ln_1p() as f64 + lnfact(matched_b) + lnfact(matched_y);
+                score
+            }
         };
         if score.is_finite() {
             score
         } else {
             255.0
         }
+    }
+}
+
+impl Score {
+    /// Calculate the hyperscore for a given PSM choosing between implementations based on `score_type`
+    fn hyperscore(&self, score_type: ScoreType) -> f64 {
+        score_type.score(self.matched_b, self.matched_y, self.summed_b, self.summed_y)
     }
 }
 
@@ -245,9 +221,8 @@ pub struct Scorer<'db> {
     pub max_isotope_err: i8,
     pub min_precursor_charge: u8,
     pub max_precursor_charge: u8,
+    pub override_precursor_charge: bool,
     pub max_fragment_charge: Option<u8>,
-    pub min_fragment_mass: f32,
-    pub max_fragment_mass: f32,
     pub chimera: bool,
     pub report_psms: usize,
 
@@ -255,7 +230,7 @@ pub struct Scorer<'db> {
     // the precursor tolerance window based on MS2 isolation window and charge
     pub wide_window: bool,
     pub annotate_matches: bool,
-    pub score_type: Option<ScoreType>,
+    pub score_type: ScoreType,
 }
 
 #[inline(always)]
@@ -334,8 +309,7 @@ impl<'db> Scorer<'db> {
 
         for peak in query.peaks.iter() {
             for charge in 1..max_fragment_charge {
-                let mass = peak.mass * charge as f32;
-                for frag in candidates.page_search(mass) {
+                for frag in candidates.page_search(peak.mass, charge) {
                     let idx = frag.peptide_index.0 as usize - candidates.pre_idx_lo;
                     let sc = &mut hits.preliminary[idx];
                     if sc.matched == 0 {
@@ -344,6 +318,7 @@ impl<'db> Scorer<'db> {
                         sc.peptide = frag.peptide_index;
                         sc.isotope_error = isotope_error;
                     }
+
                     sc.matched += 1;
                     hits.matched_peaks += 1;
                 }
@@ -412,12 +387,14 @@ impl<'db> Scorer<'db> {
             );
             self.trim_hits(&mut hits);
             hits
-        } else if let Some(charge) = precursor.charge {
+        } else if precursor.charge.is_some() && self.override_precursor_charge == false {
+            let charge = precursor.charge.unwrap();
             // Charge state is already annotated for this precusor, only search once
             let precursor_mass = mz * charge as f32;
             self.matched_peaks(query, precursor_mass, charge, self.precursor_tol)
         } else {
-            // Not all selected ion precursors have charge states annotated -
+            // Not all selected ion precursors have charge states annotated (or user has set
+            // `override_precursor_charge`)
             // assume it could be z=2, z=3, z=4 and search all three
             let mut hits = (self.min_precursor_charge..=self.max_precursor_charge).fold(
                 InitialHits::default(),
@@ -439,7 +416,7 @@ impl<'db> Scorer<'db> {
 
     /// Score a single [`ProcessedSpectrum`] against the database
     pub fn score_standard(&self, query: &ProcessedSpectrum) -> Vec<Feature> {
-        let precursor = query.precursors.get(0).unwrap_or_else(|| {
+        let precursor = query.precursors.first().unwrap_or_else(|| {
             panic!("missing MS1 precursor for {}", query.id);
         });
 
@@ -491,7 +468,7 @@ impl<'db> Scorer<'db> {
                 .unwrap_or_default();
 
             let best = score_vector
-                .get(0)
+                .first()
                 .map(|score| score.0.hyperscore)
                 .expect("we know that index 0 is valid");
 
@@ -505,7 +482,7 @@ impl<'db> Scorer<'db> {
             }
 
             let isotope_error = score.isotope_error as f32 * NEUTRON;
-            let delta_mass = (precursor_mass - peptide.monoisotopic - isotope_error).abs() * 2E6
+            let delta_mass = (precursor_mass - peptide.monoisotopic - isotope_error) * 2E6
                 / (precursor_mass - isotope_error + peptide.monoisotopic);
 
             // let (num_proteins, proteins) = self.db.assign_proteins(peptide);
@@ -525,7 +502,7 @@ impl<'db> Scorer<'db> {
                 rt: query.scan_start_time,
                 ims: query
                     .precursors
-                    .get(0)
+                    .first()
                     .unwrap()
                     .inverse_ion_mobility
                     .unwrap_or(0.0),
@@ -603,7 +580,7 @@ impl<'db> Scorer<'db> {
     /// Return multiple PSMs for each spectra - first is the best match, second PSM is the best match
     /// after all theoretical peaks assigned to the best match are removed, etc
     pub fn score_chimera_fast(&self, query: &ProcessedSpectrum) -> Vec<Feature> {
-        let precursor = query.precursors.get(0).unwrap_or_else(|| {
+        let precursor = query.precursors.first().unwrap_or_else(|| {
             panic!("missing MS1 precursor for {}", query.id);
         });
 
@@ -662,6 +639,7 @@ impl<'db> Scorer<'db> {
             for charge in 1..max_fragment_charge {
                 // Experimental peaks are multipled by charge, therefore theoretical are divided
                 let mz = frag.monoisotopic_mass / charge as f32;
+
                 if let Some(peak) = crate::spectrum::select_most_intense_peak(
                     &query.peaks,
                     mz,
@@ -705,7 +683,7 @@ impl<'db> Scorer<'db> {
             }
         }
 
-        score.hyperscore = score.hyperscore(self.score_type.unwrap_or(ScoreType::OpenMsHyperScore));
+        score.hyperscore = score.hyperscore(self.score_type);
         score.longest_b = b_run.longest;
         score.longest_y = y_run.longest;
         score.ppm_difference /= score.summed_b + score.summed_y;
