@@ -71,6 +71,7 @@ pub struct Input {
 
     annotate_matches: Option<bool>,
     write_pin: Option<bool>,
+    score_type: Option<ScoreType>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -314,6 +315,7 @@ impl Input {
             output_paths: Vec::new(),
             write_pin: self.write_pin.unwrap_or(false),
             bruker_spectrum_processor: self.bruker_spectrum_processor.unwrap_or_default(),
+            score_type: self.score_type.unwrap_or(ScoreType::SageHyperScore),
         })
     }
 }
