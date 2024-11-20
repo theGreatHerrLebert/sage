@@ -1,6 +1,7 @@
 use anyhow::{ensure, Context};
 use clap::ArgMatches;
 use sage_cloudpath::{tdf::BrukerSpectrumProcessor, CloudPath};
+use sage_core::scoring::ScoreType;
 use sage_core::{
     database::{Builder, Parameters},
     lfq::LfqSettings,
@@ -8,7 +9,6 @@ use sage_core::{
     tmt::Isobaric,
 };
 use serde::{Deserialize, Serialize};
-use sage_core::scoring::ScoreType;
 
 #[derive(Serialize)]
 /// Actual search parameters - may include overrides or default values not set by user
@@ -33,9 +33,6 @@ pub struct Search {
     pub mzml_paths: Vec<String>,
     pub output_paths: Vec<String>,
     pub bruker_spectrum_processor: BrukerSpectrumProcessor,
-    pub shuffle_decoys: Option<bool>,
-    pub keep_ends: Option<bool>,
-    pub score_type: ScoreType,
 
     #[serde(skip_serializing)]
     pub output_directory: CloudPath,
@@ -45,6 +42,8 @@ pub struct Search {
 
     #[serde(skip_serializing)]
     pub annotate_matches: bool,
+
+    pub score_type: ScoreType,
 }
 
 #[derive(Deserialize)]
@@ -72,9 +71,6 @@ pub struct Input {
 
     annotate_matches: Option<bool>,
     write_pin: Option<bool>,
-
-    shuffle_decoys: Option<bool>,
-    keep_ends: Option<bool>,
     score_type: Option<ScoreType>,
 }
 
@@ -295,6 +291,8 @@ impl Input {
             None => CloudPath::Local(std::env::current_dir()?),
         };
 
+        let score_type = self.score_type.unwrap_or(ScoreType::SageHyperScore);
+
         Ok(Search {
             version: clap::crate_version!().into(),
             database,
@@ -318,10 +316,8 @@ impl Input {
             predict_rt: self.predict_rt.unwrap_or(true),
             output_paths: Vec::new(),
             write_pin: self.write_pin.unwrap_or(false),
-            shuffle_decoys: self.shuffle_decoys,
-            keep_ends: self.keep_ends,
             bruker_spectrum_processor: self.bruker_spectrum_processor.unwrap_or_default(),
-            score_type: self.score_type.unwrap_or(ScoreType::SageHyperScore),
+            score_type,
         })
     }
 }
