@@ -66,10 +66,9 @@ impl AddAssign<InitialHits> for InitialHits {
     }
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 /// Features of a candidate peptide spectrum match
 pub struct Feature {
-    #[serde(skip_serializing)]
     pub peptide_idx: PeptideIx,
     // psm_id help to match with matched fragments table.
     pub psm_id: usize,
@@ -140,14 +139,13 @@ pub struct Feature {
     pub protein_q: f32,
 
     pub ms2_intensity: f32,
-
+    
     pub fragments: Option<Fragments>,
 }
 
 /// Matching Fragment details
-#[derive(Serialize, Default, Clone, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Fragments {
-    #[serde(skip_serializing)]
     pub charges: Vec<i32>,
     pub kinds: Vec<Kind>,
     pub fragment_ordinals: Vec<i32>,
