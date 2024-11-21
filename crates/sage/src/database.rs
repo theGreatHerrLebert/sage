@@ -304,7 +304,7 @@ impl Parameters {
     }
 }
 
-#[derive(Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct PeptideIx(pub u32);
 
