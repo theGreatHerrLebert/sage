@@ -163,7 +163,7 @@ impl Parameters {
                     })
                     .flat_map(|peptide| {
                         if self.generate_decoys {
-                            vec![peptide.reverse(), peptide].into_iter()
+                            vec![peptide.reverse(true), peptide].into_iter()
                         } else {
                             vec![peptide].into_iter()
                         }
