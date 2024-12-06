@@ -19,6 +19,7 @@ rayon = "1.5"
 regex = "1.6"
 serde = { version="1.0", features = ["derive"] }
 rand = "0.8.5"
+bincode = "2.0.0-rc.3"
 
 [dev-dependencies]
 quickcheck = "1"

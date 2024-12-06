@@ -1,9 +1,10 @@
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 use crate::mass::monoisotopic;
 use crate::peptide::Peptide;
 
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Deserialize, Serialize, Encode, Decode)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     A,
