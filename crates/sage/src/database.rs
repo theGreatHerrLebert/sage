@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::Hash;
+use bincode::{Decode, Encode};
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct EnzymeBuilder {
@@ -347,7 +348,7 @@ impl Parameters {
     }
 }
 
-#[derive(Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize, Encode, Decode)]
 #[repr(transparent)]
 pub struct PeptideIx(pub u32);
 

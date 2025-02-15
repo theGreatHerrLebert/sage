@@ -6,6 +6,7 @@ use crate::spectrum::{Precursor, ProcessedSpectrum};
 use serde::{Deserialize, Serialize};
 use std::ops::AddAssign;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use bincode::{Decode, Encode};
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum ScoreType {
@@ -66,7 +67,7 @@ impl AddAssign<InitialHits> for InitialHits {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Encode, Decode)]
 /// Features of a candidate peptide spectrum match
 pub struct Feature {
     pub peptide_idx: PeptideIx,
@@ -144,7 +145,7 @@ pub struct Feature {
 }
 
 /// Matching Fragment details
-#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug, Encode, Decode)]
 pub struct Fragments {
     pub charges: Vec<i32>,
     pub kinds: Vec<Kind>,
