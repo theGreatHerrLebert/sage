@@ -439,11 +439,23 @@ impl Runner {
             MS1Spectra::Empty
         } else if all_contain_ims {
             log::trace!("Processing MS1 spectra with IMS");
+            
+            // print all the raw spectra
+            for raw in &spectra.ms1 {
+                println!("raw: {:?}", raw);
+            }
+            
             let spectra = spectra
                 .ms1
                 .into_iter()
                 .map(|x| sp.process_with_mobility(x))
                 .collect();
+            
+            // print all the processed spectra
+            for processed in &spectra {
+                println!("processed: {:?}", processed);
+            }
+            
             MS1Spectra::WithMobility(spectra)
         } else {
             log::trace!("Processing MS1 spectra without IMS");
