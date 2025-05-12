@@ -483,10 +483,10 @@ impl IndexedQuery<'_> {
 
         // Account for multiplication of observed decharged mass
         // - relative tolerance needs to be proportionally decreased
+        // CECK: REMOVED DEVIDE BY CHARGE
         let tol = match self.fragment_tol {
-            Tolerance::Ppm(lo, hi) => Tolerance::Ppm(lo / charge as f32, hi / charge as f32),
+            Tolerance::Ppm(_, _) | Tolerance::Da(_, _) => self.fragment_tol,
             Tolerance::Pct(_, _) => unreachable!("Pct tolerance should never be used on mz"),
-            Tolerance::Da(_, _) => self.fragment_tol,
         };
 
         let (fragment_lo, fragment_hi) = tol.bounds(mass);
