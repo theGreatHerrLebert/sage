@@ -341,6 +341,7 @@ pub struct Grid {
     /// dynamic IM (min/max) of matched peaks (None if no IM or aggregated)
     pub dynamic_im_min: Option<f32>,
     pub dynamic_im_max: Option<f32>,
+    pub im_points: Vec<(f32, f64)>,
     /// File with the most confident PSM
     reference_file_id: usize,
     /// Relative theoretical isotopic abundances
@@ -363,6 +364,9 @@ pub struct Traces {
     pub spectral_angle: Matrix,
     /// File with the most confident PSM
     reference_file_id: usize,
+    pub rt_min: f32,
+    pub rt_step: f32,
+    pub im_points: Vec<(f32, f64)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -477,72 +481,106 @@ impl Traces {
     /// Align and integrate MS1 traces across files
     ///
     /// * Calculate time warping factors for each file, aligning them so that
-    ///   the correlation between them is maximized (we just do a dot product)
-    /// * Locate the retention time window corresponding to the maximum average
-    ///   angle observed across all of the files
-    /// * Integrate all of the MS1 traces within said window, returning a vector
-    ///   of length `n_files` containing the summed MS1 intensities
+    ///   the correlation between them is maximized
+    /// * Build a marginal RT intensity profile and take the central 95 % via weighted quantiles
+    /// * Locate the apex and integrate across a local window
     pub fn integrate(&mut self, settings: &LfqSettings) -> Option<(Peak, Vec<f64>)> {
+        // 1) Warp all runs to align dot‐product traces
         self.warp();
 
-        let (scores, spectral) = self.scores(settings.peak_scoring);
-        let mut best = Peak::default();
-        for (rt, s) in scores.iter().enumerate() {
-            if *s > best.score && spectral[rt] >= settings.spectral_angle {
-                best.score = *s;
-                best.rt = rt;
+        // 2) Build RT axis (bin centers)
+        let cols = self.dot_product.cols;
+        let rt_axis: Vec<f32> = (0..cols)
+            .map(|i| self.rt_min + self.rt_step * (i as f32 + 0.5))
+            .collect();
+
+        // 3) Compute marginal intensity over RT bins
+        let mut rt_marginal = vec![0.0f64; cols];
+        for file in 0..self.dot_product.rows {
+            for col in 0..cols {
+                rt_marginal[col] += self.dot_product[(file, col)];
             }
         }
 
+        // 4) Central 95 % RT window
+        let (rt_low, rt_high) = weighted_quantile_range(&rt_axis, &rt_marginal, 0.025, 0.025);
+
+        // 5) Score each RT bin and find apex
+        let (scores, spectral) = self.scores(settings.peak_scoring);
+        let mut best = Peak::default();
+        for (rt, &score) in scores.iter().enumerate() {
+            if score > best.score && spectral[rt] >= settings.spectral_angle {
+                best.score = score;
+                best.rt    = rt;
+            }
+        }
         if best.score == 0.0 {
             return None;
         }
 
-        // Find peak boundaries
-        let mut left = best.rt.saturating_sub(1);
-        let mut right = best.rt.saturating_add(1);
-
-        let threshold = best.score * 0.50;
-
-        // Don't let peaks extend more than GRID_SIZE/5 bins to either side
-        while left > best.rt.saturating_sub(scores.len() / 5)
-            && scores[left] >= threshold
+        // 6) Local integration window around apex
+        let mut left    = best.rt.saturating_sub(1);
+        let mut right   = best.rt.saturating_add(1);
+        let threshold   = best.score * 0.50;
+        let max_offset  = scores.len() / 5;
+        let max_rt_dist = best.rt + 20;
+        while left > best.rt.saturating_sub(max_offset)
+            && scores[left]  >= threshold
             && spectral[left] >= settings.spectral_angle
         {
             left -= 1;
         }
-
-        while right < scores.len().saturating_sub(1).min(best.rt + 20)
-            && scores[right] >= threshold
+        while right < scores.len().saturating_sub(1).min(max_rt_dist)
+            && scores[right]  >= threshold
             && spectral[right] >= settings.spectral_angle
         {
             right += 1;
         }
 
-        // Actually perform integration
+        // 7) Integrate each file’s trace over [left..right]
         let mut areas = Vec::with_capacity(self.dot_product.rows);
         for file in 0..self.dot_product.rows {
+            let run = self.dot_product.row_slice(file);
             let area = match settings.integration {
-                IntegrationStrategy::Sum => self.dot_product.row_slice(file)[left..right]
-                    .iter()
-                    .sum::<f64>(),
-                IntegrationStrategy::Apex => self.dot_product.row_slice(file)[best.rt],
+                IntegrationStrategy::Sum  => run[left..right].iter().sum::<f64>(),
+                IntegrationStrategy::Apex => self.dot_product[(file, best.rt)],
             };
-
             areas.push(area);
         }
 
-        let mut summed_int = 1.0;
-        let mut weighted = 0.0;
-        for (sa, dotp) in self
+        // 8) Compute normalized spectral angle at the apex
+        let mut sum_intual = 1.0;
+        let mut weighted_sa = 0.0;
+        for (sa, dp) in self
             .spectral_angle
             .col(best.rt)
             .zip(self.dot_product.col(best.rt))
         {
-            weighted += sa * dotp;
-            summed_int += dotp;
+            weighted_sa += sa * dp;
+            sum_intual  += dp;
         }
-        best.spectral_angle = weighted / summed_int;
+        best.spectral_angle = weighted_sa / sum_intual;
+
+        // 9) RT quantile bounds
+        best.rt_min = rt_low;
+        best.rt_max = rt_high;
+
+        // 10) IM quantile bounds, if any points
+        if !self.im_points.is_empty() {
+            // sort by mobility
+            let mut im_pts = std::mem::take(&mut self.im_points);
+            im_pts.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            let im_axis:  Vec<f32> = im_pts.iter().map(|(m, _)| *m).collect();
+            let im_weights: Vec<f64> = im_pts.iter().map(|(_, w)| *w).collect();
+            let (im_low, im_high) =
+                weighted_quantile_range(&im_axis, &im_weights, 0.025, 0.025);
+            best.mobility_min = Some(im_low);
+            best.mobility_max = Some(im_high);
+        } else {
+            best.mobility_min = None;
+            best.mobility_max = None;
+        }
+
         Some((best, areas))
     }
 }
@@ -573,6 +611,7 @@ impl Grid {
             dynamic_rt_max: f32::NEG_INFINITY,
             dynamic_im_min: None,
             dynamic_im_max: None,
+            im_points: Vec::new(),
         }
     }
 
@@ -595,13 +634,13 @@ impl Grid {
         self.matrix[(file_id * N_ISOTOPES + isotope, bin_lo)] +=
             ((1.0 - interp) * intensity) as f64;
         self.matrix[(file_id * N_ISOTOPES + isotope, bin_hi)] += (interp * intensity) as f64;
-
-        // —— update dynamic RT bounds —— 
+        
         self.dynamic_rt_min = self.dynamic_rt_min.min(spectrum_rt);
         self.dynamic_rt_max = self.dynamic_rt_max.max(spectrum_rt);
-
-        // —— update dynamic IM bounds if given —— 
+        
         if let Some(m) = mobility {
+            let weight = intensity as f64;
+            self.im_points.push((m, weight));
             self.dynamic_im_min = Some(self.dynamic_im_min.map_or(m, |old| old.min(m)));
             self.dynamic_im_max = Some(self.dynamic_im_max.map_or(m, |old| old.max(m)));
         }
@@ -664,6 +703,9 @@ impl Grid {
             dot_product,
             spectral_angle,
             reference_file_id: self.reference_file_id,
+            rt_min: self.rt_min,
+            rt_step: self.rt_step,
+            im_points: std::mem::take(&mut self.im_points),
         }
     }
 }
@@ -742,4 +784,37 @@ impl Query<'_> {
             (precursor.mobility_hi >= mobility) && (precursor.mobility_lo <= mobility)
         })
     }
+}
+
+/// Given a sorted list of (bin_center, weight), returns (low, high)
+fn weighted_quantile_range(
+    axis: &[f32],
+    weights: &[f64],
+    lower_pct: f64,
+    upper_pct: f64,
+) -> (f32, f32) {
+    assert_eq!(axis.len(), weights.len());
+    let total: f64 = weights.iter().sum();
+    let mut cum = 0.0;
+    let mut low = axis[0];
+    let mut high = axis[axis.len()-1];
+
+    for (i, &w) in weights.iter().enumerate() {
+        cum += w;
+        let frac = cum / total;
+        if frac >= lower_pct {
+            low = axis[i];
+            break;
+        }
+    }
+    cum = 0.0;
+    for (i, &w) in weights.iter().rev().enumerate() {
+        cum += w;
+        let frac = cum / total;
+        if frac >= (1.0 - upper_pct) {
+            high = axis[axis.len()-1 - i];
+            break;
+        }
+    }
+    (low, high)
 }
