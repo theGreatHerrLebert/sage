@@ -12,7 +12,7 @@ use std::collections::HashMap;
 // const MIN_SPECTRAL_ANGLE: f64 = 0.70;
 /// Retention time tolerance, in fraction of total run length, to search for
 /// precursor ions
-const RT_TOL: f32 = 0.0050;
+// const RT_TOL: f32 = 0.0050;
 /// Width of gaussian kernel used for smoothing intensities
 const K_WIDTH: usize = 10;
 /// Mass tolerance, in ppm, to seach for precursor ions
@@ -49,6 +49,7 @@ pub struct LfqSettings {
     pub spectral_angle: f64,
     pub ppm_tolerance: f32,
     pub mobility_pct_tolerance: f32,
+    pub rt_tolerance: f32,
     pub combine_charge_states: bool,
 }
 
@@ -60,6 +61,7 @@ impl Default for LfqSettings {
             spectral_angle: 0.70,
             ppm_tolerance: 5.0,
             mobility_pct_tolerance: 1.0,
+            rt_tolerance: 0.005,
             combine_charge_states: true,
         }
     }
@@ -154,7 +156,7 @@ pub fn build_feature_map(
                             .bounds(mass + 11.06);
 
                     let rev = PrecursorRange {
-                        rt: (fwd.rt - RT_TOL * 2.0).max(0.0),
+                        rt: (fwd.rt - settings.rt_tolerance * 2.0).max(0.0),
                         mass_lo,
                         mass_hi,
                         decoy: true,
@@ -200,12 +202,12 @@ struct Query<'a> {
 }
 
 impl FeatureMap {
-    fn rt_slice(&self, rt: f32, rt_tol: f32) -> Query<'_> {
+    fn rt_slice(&self, rt: f32) -> Query<'_> {
         let (page_lo, page_hi) = binary_search_slice(
             &self.min_rts,
-            |rt, x| rt.total_cmp(x),
-            rt - rt_tol,
-            rt + rt_tol,
+            |rt, x| rt.total_cmp(x), 
+            rt - self.settings.rt_tolerance, 
+            rt + self.settings.rt_tolerance,
         );
 
         Query {
@@ -213,8 +215,8 @@ impl FeatureMap {
             page_lo,
             page_hi,
             bin_size: self.bin_size,
-            max_rt: rt + rt_tol,
-            min_rt: rt - rt_tol,
+            max_rt: rt + self.settings.rt_tolerance, 
+            min_rt: rt - self.settings.rt_tolerance,
         }
     }
 }
@@ -236,7 +238,7 @@ impl FeatureMap {
             MS1Spectra::NoMobility(spectra) => spectra.par_iter().for_each(|spectrum| {
                 let a = alignments[spectrum.file_id];
                 let rt = (spectrum.scan_start_time / a.max_rt) * a.slope + a.intercept;
-                let query = self.rt_slice(rt, RT_TOL);
+                let query = self.rt_slice(rt);
 
                 for peak in &spectrum.peaks {
                     for entry in query.mass_lookup(peak.mass) {
@@ -256,17 +258,20 @@ impl FeatureMap {
                                 composition.carbon,
                                 composition.sulfur,
                             );
-                            Grid::new(entry, RT_TOL, dist, alignments.len(), GRID_SIZE)
+
+                            let rt_tol = self.settings.rt_tolerance;
+                            
+                            Grid::new(entry, rt_tol, dist, alignments.len(), GRID_SIZE)
                         });
 
-                        grid.add_entry(rt, entry.isotope, spectrum.file_id, peak.intensity);
+                        grid.add_entry(rt, entry.isotope, spectrum.file_id, peak.intensity, None);
                     }
                 }
             }),
             MS1Spectra::WithMobility(spectra) => spectra.par_iter().for_each(|spectrum| {
                 let a = alignments[spectrum.file_id];
                 let rt = (spectrum.scan_start_time / a.max_rt) * a.slope + a.intercept;
-                let query = self.rt_slice(rt, RT_TOL);
+                let query = self.rt_slice(rt);
 
                 for peak in &spectrum.peaks {
                     for entry in query.mass_mobility_lookup(peak.mass, peak.mobility) {
@@ -286,10 +291,13 @@ impl FeatureMap {
                                 composition.carbon,
                                 composition.sulfur,
                             );
-                            Grid::new(entry, RT_TOL, dist, alignments.len(), GRID_SIZE)
+
+                            let rt_tol = self.settings.rt_tolerance;
+                            
+                            Grid::new(entry, rt_tol, dist, alignments.len(), GRID_SIZE)
                         });
 
-                        grid.add_entry(rt, entry.isotope, spectrum.file_id, peak.intensity);
+                        grid.add_entry(rt, entry.isotope, spectrum.file_id, peak.intensity, Some(peak.mobility));
                     }
                 }
             }),
@@ -308,7 +316,13 @@ impl FeatureMap {
                 // attempt to trace the peaks, find the best peak, and integrate
                 // it across all of the files
                 let mut traces = grid.summarize_traces();
-                let (peak, data) = traces.integrate(&self.settings)?;
+                let (mut peak, data) = traces.integrate(&self.settings)?;
+                
+                // set additional peak properties
+                peak.rt_min       = grid.dynamic_rt_min;
+                peak.rt_max       = grid.dynamic_rt_max;
+                peak.mobility_min = grid.dynamic_im_min;
+                peak.mobility_max = grid.dynamic_im_max;
 
                 Some((peptide_ix, (peak, data)))
             })
@@ -320,6 +334,13 @@ pub struct Grid {
     rt_min: f32,
     rt_step: f32,
     files: usize,
+    /// the user/PSM‐defined mobility window for _this_ feature (None if aggregated)
+    /// dynamic min/max RT of _all_ matched peaks
+    pub dynamic_rt_min: f32,
+    pub dynamic_rt_max: f32,
+   /// dynamic IM (min/max) of matched peaks (None if no IM or aggregated)
+    pub dynamic_im_min: Option<f32>,
+    pub dynamic_im_max: Option<f32>,
     /// File with the most confident PSM
     reference_file_id: usize,
     /// Relative theoretical isotopic abundances
@@ -352,8 +373,13 @@ pub struct Peak {
     pub spectral_angle: f64,
     /// Peak score
     pub score: f64,
-
     pub q_value: f32,
+    /// _actual_ RT bounds of all matched MS1 points
+    pub rt_min: f32,
+    pub rt_max: f32,
+    /// _actual_ IM bounds of matched points (None if no IM)
+    pub mobility_min: Option<f32>,
+    pub mobility_max: Option<f32>,
 }
 
 impl Traces {
@@ -543,11 +569,21 @@ impl Grid {
             matrix,
             files,
             reference_file_id: entry.file_id,
+            dynamic_rt_min: f32::INFINITY,
+            dynamic_rt_max: f32::NEG_INFINITY,
+            dynamic_im_min: None,
+            dynamic_im_max: None,
         }
     }
 
     /// Add a data point to the integration grid
-    pub fn add_entry(&mut self, spectrum_rt: f32, isotope: usize, file_id: usize, intensity: f32) {
+    pub fn add_entry(
+        &mut self, 
+        spectrum_rt: f32,
+        isotope: usize,
+        file_id: usize,
+        intensity: f32,
+        mobility: Option<f32>) {
         let bin_lo = ((spectrum_rt - self.rt_min) / self.rt_step).floor() as usize;
         let bin_lo = bin_lo.min(self.matrix.cols - 1);
         let bin_hi = (bin_lo + 1).min(self.matrix.cols - 1);
@@ -559,6 +595,16 @@ impl Grid {
         self.matrix[(file_id * N_ISOTOPES + isotope, bin_lo)] +=
             ((1.0 - interp) * intensity) as f64;
         self.matrix[(file_id * N_ISOTOPES + isotope, bin_hi)] += (interp * intensity) as f64;
+
+        // —— update dynamic RT bounds —— 
+        self.dynamic_rt_min = self.dynamic_rt_min.min(spectrum_rt);
+        self.dynamic_rt_max = self.dynamic_rt_max.max(spectrum_rt);
+        
+        // —— update dynamic IM bounds if given —— 
+        if let Some(m) = mobility { 
+            self.dynamic_im_min = Some(self.dynamic_im_min.map_or(m, |old| old.min(m)));
+            self.dynamic_im_max = Some(self.dynamic_im_max.map_or(m, |old| old.max(m)));
+        }
     }
 
     /// Combine individual isotopic traces across files into aligned, summed
