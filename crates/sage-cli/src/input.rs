@@ -102,6 +102,7 @@ impl From<LfqOptions> for LfqSettings {
             combine_charge_states: value
                 .combine_charge_states
                 .unwrap_or(default.combine_charge_states),
+            rt_tolerance: 0.0050,
         };
         if settings.ppm_tolerance > 20.0 {
             log::warn!("lfq_settings.ppm_tolerance is higher than expected");
