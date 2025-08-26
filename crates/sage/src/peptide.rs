@@ -48,7 +48,7 @@ impl Peptide {
             })
             .then_with(|| {
                 self.cterm
-                    .partial_cmp(&other.nterm)
+                    .partial_cmp(&other.cterm)
                     .unwrap_or(Ordering::Equal)
             })
     }

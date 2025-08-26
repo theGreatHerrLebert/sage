@@ -5,7 +5,7 @@ use crate::mass::{Tolerance, NEUTRON, PROTON};
 use crate::spectrum::{Peak, Precursor, ProcessedSpectrum};
 use serde::{Deserialize, Serialize};
 use std::ops::AddAssign;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use bincode::{Decode, Encode};
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -140,7 +140,7 @@ pub struct Feature {
     pub protein_q: f32,
 
     pub ms2_intensity: f32,
-    
+
     pub fragments: Option<Fragments>,
 }
 
@@ -242,11 +242,17 @@ fn max_fragment_charge(max_fragment_charge: Option<u8>, precursor_charge: u8) ->
 }
 
 impl<'db> Scorer<'db> {
+    /// Perform a quick first-pass scoring, where we consider a peptide "identified"
+    /// if it meets the following criterion:
+    ///  * prefilter_low_memory = true: in the top `report_psms` hits for a spectrum
+    ///  * prefilter_low_memory = false: has at least `min_matched_peaks` fragment ion matches
+    /// A vector of atomic bools is used to maintain an identification list across scans
     pub fn quick_score(
         &self,
         query: &ProcessedSpectrum<Peak>,
         prefilter_low_memory: bool,
-    ) -> Vec<PeptideIx> {
+        keep: &[AtomicBool]
+    ) {
         assert_eq!(
             query.level, 2,
             "internal bug, trying to score a non-MS2 scan!"
@@ -271,15 +277,18 @@ impl<'db> Scorer<'db> {
                     Some(score)
                 })
                 .collect::<Vec<_>>();
-            let k = self.report_psms.min(score_vector.len()) + 1;
+
+            let k = self.report_psms.min(score_vector.len());
             bounded_min_heapify(&mut score_vector, k);
-            score_vector.iter().map(|x| x.peptide).collect()
+            for score in &score_vector[..k] {
+                keep[score.peptide.0 as usize].store(true, Ordering::Relaxed);
+            }
         } else {
-            hits.preliminary
-                .iter()
-                .map(|x| x.peptide)
-                .filter(|&peptide| peptide != PeptideIx::default())
-                .collect()
+            for pre in &hits.preliminary {
+                if pre.peptide != PeptideIx::default() {
+                    keep[pre.peptide.0 as usize].store(true, Ordering::Relaxed);
+                }
+            }
         }
     }
 
@@ -343,7 +352,8 @@ impl<'db> Scorer<'db> {
 
         for peak in query.peaks.iter() {
             for charge in 1..max_fragment_charge {
-                for frag in candidates.page_search(peak.mass, charge) {
+                let mass = peak.mass * charge as f32;
+                for frag in candidates.page_search(mass) {
                     let idx = frag.peptide_index.0 as usize - candidates.pre_idx_lo;
                     let sc = &mut hits.preliminary[idx];
                     if sc.matched == 0 {
