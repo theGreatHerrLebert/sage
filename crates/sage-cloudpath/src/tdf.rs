@@ -60,8 +60,7 @@ impl TdfReader {
     ) -> Result<Vec<RawSpectrum>, timsrust::TimsRustError> {
         let start = std::time::Instant::now();
         let frame_reader = timsrust::readers::FrameReader::new(path_name.as_ref())?;
-        let tdf_path = std::path::Path::new(path_name.as_ref()).join("analysis.tdf");
-        let metadata = timsrust::readers::MetadataReader::new(tdf_path)?;
+        let metadata = timsrust::readers::MetadataReader::new(path_name.as_ref())?;
         let mz_converter = metadata.mz_converter;
         let ims_converter = metadata.im_converter;
         let tol_ppm = config.mz_ppm;
@@ -380,8 +379,7 @@ impl PeakBuffer {
             }
         }
 
-        self
-            .agg_buff
+        self.agg_buff
             .sort_unstable_by(|a, b| a.mz.partial_cmp(&b.mz).unwrap());
         // println!("Centroiding: Start len: {}; end len: {};", arr_len, result.len());
         // Ultra data is usually start: 40k end 10k,
@@ -389,12 +387,10 @@ impl PeakBuffer {
         // rarely leaves peaks with intensity > 200 ... ive never seen
         // it happen. -JSP 2025-Jan
 
-        self
-            .agg_buff
+        self.agg_buff
             .drain(..)
             .into_iter()
             .map(|x| (x.mz, (x.intensity, x.im)))
             .unzip()
     }
 }
-
