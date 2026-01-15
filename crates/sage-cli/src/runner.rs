@@ -188,6 +188,7 @@ impl Runner {
                     wide_window: self.parameters.wide_window,
                     annotate_matches: self.parameters.annotate_matches,
                     score_type: self.parameters.score_type,
+                    intensity_store: None,
                 };
 
                 // Allocate an array of booleans indicating whether a peptide was identified in a
@@ -517,6 +518,7 @@ impl Runner {
             wide_window: self.parameters.wide_window,
             annotate_matches: self.parameters.annotate_matches,
             score_type: self.parameters.score_type,
+            intensity_store: None,
         };
 
         //Collect all results into a single container

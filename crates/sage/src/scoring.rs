@@ -1,5 +1,6 @@
 use crate::database::{IndexedDatabase, PeptideIx};
 use crate::heap::bounded_min_heapify;
+use crate::intensity_prediction::PredictedIntensityStore;
 use crate::ion_series::{IonSeries, Kind};
 use crate::mass::{Tolerance, NEUTRON, PROTON};
 use crate::spectrum::{Peak, Precursor, ProcessedSpectrum};
@@ -12,6 +13,10 @@ use bincode::{Decode, Encode};
 pub enum ScoreType {
     SageHyperScore,
     OpenMSHyperScore,
+    /// Sage hyperscore weighted by predicted fragment intensities
+    WeightedSageHyperScore,
+    /// OpenMS hyperscore weighted by predicted fragment intensities
+    WeightedOpenMSHyperScore,
 }
 
 /// Structure to hold temporary scores
@@ -22,6 +27,10 @@ struct Score {
     matched_y: u16,
     summed_b: f32,
     summed_y: f32,
+    /// Intensity-weighted sum of matched B-ions (observed * predicted)
+    weighted_summed_b: f32,
+    /// Intensity-weighted sum of matched Y-ions (observed * predicted)
+    weighted_summed_y: f32,
     longest_b: usize,
     longest_y: usize,
     hyperscore: f64,
@@ -172,19 +181,44 @@ fn lnfact(n: u16) -> f64 {
 }
 
 impl ScoreType {
+    /// Calculate the hyperscore using standard (unweighted) intensity sums.
     pub fn score(&self, matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
+        self.score_weighted(matched_b, matched_y, summed_b, summed_y, summed_b, summed_y)
+    }
+
+    /// Calculate the hyperscore with separate weighted and unweighted intensity sums.
+    ///
+    /// For unweighted score types, the weighted_* parameters are ignored.
+    /// For weighted score types, the weighted_* parameters are used for scoring.
+    pub fn score_weighted(
+        &self,
+        matched_b: u16,
+        matched_y: u16,
+        summed_b: f32,
+        summed_y: f32,
+        weighted_summed_b: f32,
+        weighted_summed_y: f32,
+    ) -> f64 {
         let score = match self {
-            // Calculate the X!Tandem hyperscore
+            // Calculate the X!Tandem hyperscore (unweighted)
             Self::SageHyperScore => {
                 let i = (summed_b + 1.0) as f64 * (summed_y + 1.0) as f64;
-                let score = i.ln() + lnfact(matched_b) + lnfact(matched_y);
-                score
+                i.ln() + lnfact(matched_b) + lnfact(matched_y)
             }
-            // Calculate the OpenMS flavour hyperscore
+            // Calculate the OpenMS flavour hyperscore (unweighted)
             Self::OpenMSHyperScore => {
                 let summed_intensity = summed_b + summed_y;
-                let score = summed_intensity.ln_1p() as f64 + lnfact(matched_b) + lnfact(matched_y);
-                score
+                summed_intensity.ln_1p() as f64 + lnfact(matched_b) + lnfact(matched_y)
+            }
+            // Calculate the weighted Sage hyperscore
+            Self::WeightedSageHyperScore => {
+                let i = (weighted_summed_b + 1.0) as f64 * (weighted_summed_y + 1.0) as f64;
+                i.ln() + lnfact(matched_b) + lnfact(matched_y)
+            }
+            // Calculate the weighted OpenMS hyperscore
+            Self::WeightedOpenMSHyperScore => {
+                let summed_intensity = weighted_summed_b + weighted_summed_y;
+                summed_intensity.ln_1p() as f64 + lnfact(matched_b) + lnfact(matched_y)
             }
         };
         if score.is_finite() {
@@ -198,7 +232,14 @@ impl ScoreType {
 impl Score {
     /// Calculate the hyperscore for a given PSM choosing between implementations based on `score_type`
     fn hyperscore(&self, score_type: ScoreType) -> f64 {
-        score_type.score(self.matched_b, self.matched_y, self.summed_b, self.summed_y)
+        score_type.score_weighted(
+            self.matched_b,
+            self.matched_y,
+            self.summed_b,
+            self.summed_y,
+            self.weighted_summed_b,
+            self.weighted_summed_y,
+        )
     }
 }
 
@@ -224,6 +265,11 @@ pub struct Scorer<'db> {
     pub wide_window: bool,
     pub annotate_matches: bool,
     pub score_type: ScoreType,
+
+    /// Optional store of predicted fragment ion intensities for weighted scoring.
+    /// When provided and using a weighted score type, predicted intensities will be
+    /// used to weight the contribution of each matched peak.
+    pub intensity_store: Option<&'db PredictedIntensityStore>,
 }
 
 #[inline(always)]
@@ -694,15 +740,32 @@ impl<'db> Scorer<'db> {
                     let exp_mz = peak.mass + PROTON;
                     let calc_mz = mz + PROTON;
 
+                    // Get predicted intensity from store if available, otherwise use 1.0
+                    let predicted_intensity: f32 = self
+                        .intensity_store
+                        .and_then(|store| {
+                            store.get_intensity(
+                                score.peptide.0 as usize,
+                                peptide.sequence.len(),
+                                frag.kind,
+                                idx,
+                                charge,
+                            )
+                        })
+                        .unwrap_or(1.0);
+                    let weighted_intensity = peak.intensity * predicted_intensity;
+
                     match frag.kind {
                         Kind::A | Kind::B | Kind::C => {
                             score.matched_b += 1;
                             score.summed_b += peak.intensity;
+                            score.weighted_summed_b += weighted_intensity;
                             b_run.matched(idx);
                         }
                         Kind::X | Kind::Y | Kind::Z => {
                             score.matched_y += 1;
                             score.summed_y += peak.intensity;
+                            score.weighted_summed_y += weighted_intensity;
                             y_run.matched(idx);
                         }
                     }
