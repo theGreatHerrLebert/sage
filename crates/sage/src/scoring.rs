@@ -1,13 +1,13 @@
 use crate::database::{IndexedDatabase, PeptideIx};
 use crate::heap::bounded_min_heapify;
-use crate::intensity_prediction::PredictedIntensityStore;
+use crate::intensity_prediction::IntensityStore;
 use crate::ion_series::{IonSeries, Kind};
 use crate::mass::{Tolerance, NEUTRON, PROTON};
 use crate::spectrum::{Peak, Precursor, ProcessedSpectrum};
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::ops::AddAssign;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use bincode::{Decode, Encode};
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum ScoreType {
@@ -17,6 +17,10 @@ pub enum ScoreType {
     WeightedSageHyperScore,
     /// OpenMS hyperscore weighted by predicted fragment intensities
     WeightedOpenMSHyperScore,
+    /// Beta score: dot product of observed and predicted intensities
+    /// with optimized factorial terms. Uses the combined dot product
+    /// rather than separate B/Y products for better spectral similarity.
+    BetaScore,
 }
 
 /// Structure to hold temporary scores
@@ -180,6 +184,20 @@ fn lnfact(n: u16) -> f64 {
     }
 }
 
+/// Compute log factorial from n down to k: ln(n!) - ln((k-1)!) = ln(n) + ln(n-1) + ... + ln(k)
+/// This is used for the beta score to compute ln(max!/min!) efficiently.
+fn lnfact_range(n: u16, k: u16) -> f64 {
+    let k = k.max(2);
+    if n < k {
+        return 0.0;
+    }
+    let mut result = 0.0;
+    for i in (k..=n).rev() {
+        result += (i as f64).ln();
+    }
+    result
+}
+
 impl ScoreType {
     /// Calculate the hyperscore using standard (unweighted) intensity sums.
     pub fn score(&self, matched_b: u16, matched_y: u16, summed_b: f32, summed_y: f32) -> f64 {
@@ -219,6 +237,17 @@ impl ScoreType {
             Self::WeightedOpenMSHyperScore => {
                 let summed_intensity = weighted_summed_b + weighted_summed_y;
                 summed_intensity.ln_1p() as f64 + lnfact(matched_b) + lnfact(matched_y)
+            }
+            // Calculate the beta score: dot product with optimized factorial terms
+            // score = ln1p(obs · pred) + 2×ln(min!) + ln(max!/min!)
+            // This captures cosine-like spectral similarity more directly
+            Self::BetaScore => {
+                let dot_product = weighted_summed_b + weighted_summed_y;
+                let i_min = matched_b.min(matched_y);
+                let i_max = matched_b.max(matched_y);
+                (dot_product as f64).ln_1p()
+                    + 2.0 * lnfact(i_min)
+                    + lnfact_range(i_max, i_min + 1)
             }
         };
         if score.is_finite() {
@@ -269,7 +298,15 @@ pub struct Scorer<'db> {
     /// Optional store of predicted fragment ion intensities for weighted scoring.
     /// When provided and using a weighted score type, predicted intensities will be
     /// used to weight the contribution of each matched peak.
-    pub intensity_store: Option<&'db PredictedIntensityStore>,
+    /// Supports both V1 (positional index) and V2 (sequence+charge key) formats.
+    pub intensity_store: Option<&'db IntensityStore>,
+
+    /// Pre-computed UNIMOD sequences for V2 intensity lookup.
+    /// When using V2 intensity stores, this must contain UNIMOD-annotated sequences
+    /// for all peptides in the database, indexed by PeptideIx.
+    /// Example: "PEPTC[UNIMOD:4]IDEK" for carbamidomethylated cysteine.
+    /// If None and using V2 store, V2 lookups will use raw sequence bytes (less accurate).
+    pub unimod_sequences: Option<&'db [String]>,
 }
 
 #[inline(always)]
@@ -741,11 +778,24 @@ impl<'db> Scorer<'db> {
                     let calc_mz = mz + PROTON;
 
                     // Get predicted intensity from store if available, otherwise use 1.0
+                    // Uses unified lookup that works for both V1 (positional) and V2 (key-based) stores
+                    // For V2, prefers UNIMOD sequence if available, falls back to raw sequence
                     let predicted_intensity: f32 = self
                         .intensity_store
                         .and_then(|store| {
+                            // Get UNIMOD sequence for V2 lookup, or convert raw sequence to string
+                            let unimod_seq: String = self
+                                .unimod_sequences
+                                .and_then(|seqs| seqs.get(score.peptide.0 as usize).cloned())
+                                .unwrap_or_else(|| {
+                                    // Fallback: use raw sequence as string (works for V1, less accurate for V2)
+                                    String::from_utf8_lossy(&peptide.sequence).to_string()
+                                });
+
                             store.get_intensity(
                                 score.peptide.0 as usize,
+                                &unimod_seq,
+                                score.precursor_charge,
                                 peptide.sequence.len(),
                                 frag.kind,
                                 idx,

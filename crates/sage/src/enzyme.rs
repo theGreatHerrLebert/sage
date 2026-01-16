@@ -1,5 +1,6 @@
 use fnv::FnvHashSet;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::mass::VALID_AA;
@@ -61,7 +62,7 @@ pub fn group_digests(mut digests: Vec<Digest>) -> Vec<DigestGroup> {
     groups
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Serialize, Deserialize)]
 pub enum Position {
     Nterm,
     Cterm,

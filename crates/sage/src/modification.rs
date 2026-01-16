@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use serde::{Serialize};
+use serde::{de, Deserialize, Serialize};
 
 use crate::mass::VALID_AA;
 
@@ -53,6 +53,24 @@ impl Serialize for ModificationSpecificity {
         S: serde::Serializer,
     {
         serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ModificationSpecificity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(|e| match e {
+            InvalidModification::Empty => de::Error::custom("empty modification string"),
+            InvalidModification::InvalidResidue(c) => {
+                de::Error::custom(format!("invalid residue: {}", c))
+            }
+            InvalidModification::TooLong(s) => {
+                de::Error::custom(format!("modification string too long: {}", s))
+            }
+        })
     }
 }
 

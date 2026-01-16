@@ -4,14 +4,17 @@ use crate::ion_series::{IonSeries, Kind};
 use crate::mass::Tolerance;
 use crate::modification::{validate_mods, validate_var_mods, ModificationSpecificity};
 use crate::peptide::Peptide;
+use bincode::{Decode, Encode};
 use dashmap::DashSet;
 use fnv::FnvBuildHasher;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::fs::File;
 use std::hash::Hash;
-use bincode::{Decode, Encode};
+use std::io::{BufReader, BufWriter, Read as IoRead, Write as IoWrite};
+use std::path::Path;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct EnzymeBuilder {
@@ -365,7 +368,9 @@ impl Parameters {
     }
 }
 
-#[derive(Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize, Encode, Decode)]
+#[derive(
+    Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize, Encode, Decode,
+)]
 #[repr(transparent)]
 pub struct PeptideIx(pub u32);
 
@@ -376,13 +381,13 @@ impl Default for PeptideIx {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Theoretical {
     pub peptide_index: PeptideIx,
     pub fragment_mz: f32,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct IndexedDatabase {
     pub peptides: Vec<Peptide>,
     pub fragments: Vec<Theoretical>,
@@ -456,6 +461,63 @@ impl IndexedDatabase {
             .unwrap();
         }
         wtr.flush().unwrap();
+    }
+
+    /// Save the indexed database to a binary file (.sagdb format)
+    ///
+    /// This allows reloading the database with stable peptide indices,
+    /// enabling reuse of intensity predictions stored in .sagi files.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), std::io::Error> {
+        const SAGDB_MAGIC: &[u8; 5] = b"SAGDB";
+        const SAGDB_VERSION: u8 = 1;
+
+        let file = File::create(path)?;
+        let mut writer = BufWriter::new(file);
+
+        // Write header
+        writer.write_all(SAGDB_MAGIC)?;
+        writer.write_all(&[SAGDB_VERSION])?;
+
+        // Serialize with bincode
+        bincode::serde::encode_into_std_write(self, &mut writer, bincode::config::standard())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+
+        writer.flush()
+    }
+
+    /// Load an indexed database from a binary file (.sagdb format)
+    ///
+    /// This restores the database with the same peptide indices as when it was saved,
+    /// ensuring compatibility with intensity predictions stored in .sagi files.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
+        const SAGDB_MAGIC: &[u8; 5] = b"SAGDB";
+        const SAGDB_VERSION: u8 = 1;
+
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+
+        // Verify header
+        let mut magic = [0u8; 5];
+        reader.read_exact(&mut magic)?;
+        if &magic != SAGDB_MAGIC {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid SAGDB file magic",
+            ));
+        }
+
+        let mut version = [0u8; 1];
+        reader.read_exact(&mut version)?;
+        if version[0] != SAGDB_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Unsupported SAGDB version: {}", version[0]),
+            ));
+        }
+
+        // Deserialize
+        bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     }
 }
 

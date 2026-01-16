@@ -10,8 +10,9 @@ use fnv::FnvHashSet;
 use itertools::Itertools;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Peptide {
     pub decoy: bool,
     pub sequence: Arc<[u8]>,
@@ -159,38 +160,38 @@ impl Peptide {
         match (target, self.position) {
             (ModificationSpecificity::PeptideN(None), _) => acc.push((Site::Nterm, mass)),
             (ModificationSpecificity::PeptideN(Some(resi)), _)
-            if resi == *self.sequence.first().unwrap_or(&0) =>
-                {
-                    acc.push((Site::Sequence(0), mass))
-                }
+                if resi == *self.sequence.first().unwrap_or(&0) =>
+            {
+                acc.push((Site::Sequence(0), mass))
+            }
             (ModificationSpecificity::PeptideC(None), _) => acc.push((Site::Cterm, mass)),
             (ModificationSpecificity::PeptideC(Some(resi)), _)
-            if resi == *self.sequence.last().unwrap_or(&0) =>
-                {
-                    acc.push((
-                        Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
-                        mass,
-                    ))
-                }
+                if resi == *self.sequence.last().unwrap_or(&0) =>
+            {
+                acc.push((
+                    Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
+                    mass,
+                ))
+            }
             (ModificationSpecificity::ProteinN(None), Position::Nterm | Position::Full) => {
                 acc.push((Site::Nterm, mass))
             }
             (ModificationSpecificity::ProteinN(Some(resi)), Position::Nterm | Position::Full)
-            if resi == *self.sequence.first().unwrap_or(&0) =>
-                {
-                    acc.push((Site::Sequence(0), mass))
-                }
+                if resi == *self.sequence.first().unwrap_or(&0) =>
+            {
+                acc.push((Site::Sequence(0), mass))
+            }
             (ModificationSpecificity::ProteinC(None), Position::Cterm | Position::Full) => {
                 acc.push((Site::Cterm, mass))
             }
             (ModificationSpecificity::ProteinC(Some(resi)), Position::Cterm | Position::Full)
-            if resi == *self.sequence.last().unwrap_or(&0) =>
-                {
-                    acc.push((
-                        Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
-                        mass,
-                    ))
-                }
+                if resi == *self.sequence.last().unwrap_or(&0) =>
+            {
+                acc.push((
+                    Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
+                    mass,
+                ))
+            }
             (ModificationSpecificity::Residue(resi), _) => {
                 acc.extend(
                     self.sequence
@@ -213,38 +214,38 @@ impl Peptide {
         match (target, self.position) {
             (ModificationSpecificity::PeptideN(None), _) => self.apply_site(Site::Nterm, mass),
             (ModificationSpecificity::PeptideN(Some(resi)), _)
-            if resi == *self.sequence.first().unwrap_or(&0) =>
-                {
-                    self.apply_site(Site::Sequence(0), mass)
-                }
+                if resi == *self.sequence.first().unwrap_or(&0) =>
+            {
+                self.apply_site(Site::Sequence(0), mass)
+            }
             (ModificationSpecificity::PeptideC(None), _) => self.apply_site(Site::Cterm, mass),
             (ModificationSpecificity::PeptideC(Some(resi)), _)
-            if resi == *self.sequence.last().unwrap_or(&0) =>
-                {
-                    self.apply_site(
-                        Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
-                        mass,
-                    )
-                }
+                if resi == *self.sequence.last().unwrap_or(&0) =>
+            {
+                self.apply_site(
+                    Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
+                    mass,
+                )
+            }
             (ModificationSpecificity::ProteinN(None), Position::Nterm | Position::Full) => {
                 self.apply_site(Site::Nterm, mass)
             }
             (ModificationSpecificity::ProteinN(Some(resi)), Position::Nterm | Position::Full)
-            if resi == *self.sequence.first().unwrap_or(&0) =>
-                {
-                    self.apply_site(Site::Sequence(0), mass)
-                }
+                if resi == *self.sequence.first().unwrap_or(&0) =>
+            {
+                self.apply_site(Site::Sequence(0), mass)
+            }
             (ModificationSpecificity::ProteinC(None), Position::Cterm | Position::Full) => {
                 self.apply_site(Site::Cterm, mass)
             }
             (ModificationSpecificity::ProteinC(Some(resi)), Position::Cterm | Position::Full)
-            if resi == *self.sequence.last().unwrap_or(&0) =>
-                {
-                    self.apply_site(
-                        Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
-                        mass,
-                    )
-                }
+                if resi == *self.sequence.last().unwrap_or(&0) =>
+            {
+                self.apply_site(
+                    Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
+                    mass,
+                )
+            }
             (ModificationSpecificity::Residue(resi), _) => {
                 for (idx, residue) in self.sequence.iter().enumerate() {
                     if resi == *residue && self.modifications[idx] == 0.0 {
@@ -344,7 +345,7 @@ impl Peptide {
 
             if keep_ends {
                 if n > 2 {
-                    let mut indices: Vec<usize> = (1..n-1).collect();
+                    let mut indices: Vec<usize> = (1..n - 1).collect();
                     indices.shuffle(&mut rng);
 
                     let mut s_shuffled = s.clone();
@@ -353,8 +354,8 @@ impl Peptide {
                         s_shuffled[i + 1] = s[idx];
                         m_shuffled[i + 1] = m[idx];
                     }
-                    s[1..n-1].copy_from_slice(&s_shuffled[1..n-1]);
-                    m[1..n-1].copy_from_slice(&m_shuffled[1..n-1]);
+                    s[1..n - 1].copy_from_slice(&s_shuffled[1..n - 1]);
+                    m[1..n - 1].copy_from_slice(&m_shuffled[1..n - 1]);
                 }
             } else {
                 let mut indices: Vec<usize> = (0..n).collect();
