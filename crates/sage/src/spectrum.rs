@@ -2,18 +2,10 @@ use crate::database::binary_search_slice;
 use crate::mass::{Tolerance, NEUTRON, PROTON};
 
 /// A charge-less peak at monoisotopic mass
-#[derive(PartialEq, Copy, Clone, Debug)]
+#[derive(PartialEq, Copy, Clone, Default, Debug)]
 pub struct Peak {
     pub intensity: f32,
     pub mass: f32,
-    /// Observed charge state: 1 for non-deisotoped peaks, actual charge for deisotoped peaks
-    pub charge: u8,
-}
-
-impl Default for Peak {
-    fn default() -> Self {
-        Peak { intensity: 0.0, mass: 0.0, charge: 1 }
-    }
 }
 
 impl Eq for Peak {}
@@ -103,6 +95,10 @@ pub struct ProcessedSpectrum<T> {
     pub precursors: Vec<Precursor>,
     /// MS peaks, sorted by mass in ascending order
     pub peaks: Vec<T>,
+    /// Parallel to `peaks`. Non-empty only when deisotoping is enabled;
+    /// `peak_charges[i]` is the observed charge of `peaks[i]`.
+    /// Empty (all charges implicitly 1) when deisotope=false.
+    pub peak_charges: Vec<u8>,
     /// Total ion current
     pub total_ion_current: f32,
 }
@@ -173,7 +169,7 @@ pub fn select_most_intense_peak(
     center: f32,
     tolerance: Tolerance,
     offset: Option<f32>,
-) -> Option<&Peak> {
+) -> Option<usize> {
     let (lo, hi) = tolerance.bounds(center);
     let (lo, hi) = (
         lo + offset.unwrap_or_default(),
@@ -182,18 +178,19 @@ pub fn select_most_intense_peak(
 
     let (i, j) = binary_search_slice(peaks, |peak, query| peak.mass.total_cmp(query), lo, hi);
 
-    let mut best_peak = None;
+    let mut best_idx = None;
     let mut max_int = 0.0;
-    for peak in peaks[i..j]
+    for (idx, peak) in peaks[i..j]
         .iter()
-        .filter(|peak| peak.mass >= lo && peak.mass <= hi)
+        .enumerate()
+        .filter(|(_, peak)| peak.mass >= lo && peak.mass <= hi)
     {
         if peak.intensity >= max_int {
             max_int = peak.intensity;
-            best_peak = Some(peak);
+            best_idx = Some(i + idx);
         }
     }
-    best_peak
+    best_idx
 }
 
 // pub fn find_spectrum_by_id(
@@ -306,7 +303,11 @@ impl SpectrumProcessor {
         }
     }
 
-    fn process_ms2(&self, should_deisotope: bool, spectrum: &RawSpectrum) -> Vec<Peak> {
+    fn process_ms2(
+        &self,
+        should_deisotope: bool,
+        spectrum: &RawSpectrum,
+    ) -> (Vec<Peak>, Vec<u8>) {
         if spectrum.representation != Representation::Centroid {
             // Panic, because there's really nothing we can do with profile data
             panic!(
@@ -336,21 +337,20 @@ impl SpectrumProcessor {
                     .then_with(|| a.mz.total_cmp(&b.mz))
             });
 
-            peaks
+            // Collect as (Peak, charge) pairs so we can sort both by mass together
+            let mut pairs: Vec<(Peak, u8)> = peaks
                 .into_iter()
                 .filter(|peak| peak.envelope.is_none())
                 .map(|peak| {
                     // Convert from MH* to M
                     let charge = peak.charge.unwrap_or(1);
                     let mass = (peak.mz - PROTON) * charge as f32;
-                    Peak {
-                        mass,
-                        intensity: peak.intensity,
-                        charge,
-                    }
+                    (Peak { mass, intensity: peak.intensity }, charge)
                 })
                 .take(self.take_top_n)
-                .collect::<Vec<Peak>>()
+                .collect();
+            pairs.sort_by(|(a, _), (b, _)| a.mass.total_cmp(&b.mass));
+            pairs.into_iter().unzip()
         } else {
             let mut peaks = spectrum
                 .mz
@@ -358,30 +358,38 @@ impl SpectrumProcessor {
                 .zip(spectrum.intensity.iter())
                 .map(|(mz, &intensity)| {
                     let mass = (mz - PROTON) * 1.0;
-                    Peak { mass, intensity, charge: 1 }
+                    Peak { mass, intensity }
                 })
                 .collect::<Vec<_>>();
             crate::heap::bounded_min_heapify(&mut peaks, self.take_top_n);
             peaks.truncate(self.take_top_n);
-            peaks
+            (peaks, vec![])
         }
     }
 
     pub fn process(&self, spectrum: RawSpectrum) -> ProcessedSpectrum<Peak> {
-        let mut peaks = match spectrum.ms_level {
+        let (mut peaks, mut peak_charges) = match spectrum.ms_level {
             2 => self.process_ms2(self.deisotope, &spectrum),
-            _ => spectrum
-                .mz
-                .iter()
-                .zip(spectrum.intensity.iter())
-                .map(|(&mass, &intensity)| {
-                    let mass = (mass - PROTON) * 1.0;
-                    Peak { mass, intensity, charge: 1 }
-                })
-                .collect::<Vec<_>>(),
+            _ => {
+                let peaks = spectrum
+                    .mz
+                    .iter()
+                    .zip(spectrum.intensity.iter())
+                    .map(|(&mass, &intensity)| {
+                        let mass = (mass - PROTON) * 1.0;
+                        Peak { mass, intensity }
+                    })
+                    .collect::<Vec<_>>();
+                (peaks, vec![])
+            }
         };
 
-        peaks.sort_by(|a, b| a.mass.total_cmp(&b.mass));
+        // process_ms2 deisotope branch already sorts; sort the other paths here
+        if peak_charges.is_empty() {
+            peaks.sort_by(|a, b| a.mass.total_cmp(&b.mass));
+        }
+        // If peak_charges is non-empty the pairs were already sorted inside process_ms2
+
         let total_ion_current = peaks.iter().map(|peak| peak.intensity).sum::<f32>();
 
         ProcessedSpectrum {
@@ -392,6 +400,7 @@ impl SpectrumProcessor {
             ion_injection_time: spectrum.ion_injection_time,
             precursors: spectrum.precursors,
             peaks,
+            peak_charges,
             total_ion_current,
         }
     }
@@ -431,6 +440,7 @@ impl SpectrumProcessor {
             ion_injection_time: spectrum.ion_injection_time,
             precursors: spectrum.precursors,
             peaks,
+            peak_charges: vec![],
             total_ion_current,
         }
     }

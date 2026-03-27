@@ -609,13 +609,13 @@ impl<'db> Scorer<'db> {
         for frag in fragments {
             for charge in 1..max_fragment_charge {
                 // Experimental peaks are multipled by charge, therefore theoretical are divided
-                if let Some(peak) = crate::spectrum::select_most_intense_peak(
+                if let Some(i) = crate::spectrum::select_most_intense_peak(
                     &query.peaks,
                     frag.monoisotopic_mass / charge as f32,
                     self.fragment_tol,
                     None,
                 ) {
-                    to_remove.push(*peak);
+                    to_remove.push(query.peaks[i]);
                 }
             }
         }
@@ -691,17 +691,20 @@ impl<'db> Scorer<'db> {
                 // Experimental peaks are multipled by charge, therefore theoretical are divided
                 let mz = frag.monoisotopic_mass / charge as f32;
 
-                if let Some(peak) = crate::spectrum::select_most_intense_peak(
+                if let Some(i) = crate::spectrum::select_most_intense_peak(
                     &query.peaks,
                     mz,
                     self.fragment_tol,
                     None,
                 ) {
+                    let peak = &query.peaks[i];
+                    let peak_charge = query.peak_charges.get(i).copied().unwrap_or(1);
+
                     score.ppm_difference +=
                         peak.intensity * (mz - peak.mass).abs() * 2E6 / (mz + peak.mass);
 
-                    let exp_mz = peak.mass / peak.charge as f32 + PROTON;
-                    let calc_mz = frag.monoisotopic_mass / peak.charge as f32 + PROTON;
+                    let exp_mz = peak.mass / peak_charge as f32 + PROTON;
+                    let calc_mz = frag.monoisotopic_mass / peak_charge as f32 + PROTON;
 
                     match frag.kind {
                         Kind::A | Kind::B | Kind::C => {
@@ -724,7 +727,7 @@ impl<'db> Scorer<'db> {
                             }
                         };
                         fragments_details.kinds.push(frag.kind);
-                        fragments_details.charges.push(peak.charge as i32);
+                        fragments_details.charges.push(peak_charge as i32);
                         fragments_details.mz_experimental.push(exp_mz);
                         fragments_details.mz_calculated.push(calc_mz);
                         fragments_details.fragment_ordinals.push(idx);
