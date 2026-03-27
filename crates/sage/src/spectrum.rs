@@ -2,10 +2,18 @@ use crate::database::binary_search_slice;
 use crate::mass::{Tolerance, NEUTRON, PROTON};
 
 /// A charge-less peak at monoisotopic mass
-#[derive(PartialEq, Copy, Clone, Default, Debug)]
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub struct Peak {
     pub intensity: f32,
     pub mass: f32,
+    /// Observed charge state: 1 for non-deisotoped peaks, actual charge for deisotoped peaks
+    pub charge: u8,
+}
+
+impl Default for Peak {
+    fn default() -> Self {
+        Peak { intensity: 0.0, mass: 0.0, charge: 1 }
+    }
 }
 
 impl Eq for Peak {}
@@ -333,10 +341,12 @@ impl SpectrumProcessor {
                 .filter(|peak| peak.envelope.is_none())
                 .map(|peak| {
                     // Convert from MH* to M
-                    let mass = (peak.mz - PROTON) * peak.charge.unwrap_or(1) as f32;
+                    let charge = peak.charge.unwrap_or(1);
+                    let mass = (peak.mz - PROTON) * charge as f32;
                     Peak {
                         mass,
                         intensity: peak.intensity,
+                        charge,
                     }
                 })
                 .take(self.take_top_n)
@@ -348,7 +358,7 @@ impl SpectrumProcessor {
                 .zip(spectrum.intensity.iter())
                 .map(|(mz, &intensity)| {
                     let mass = (mz - PROTON) * 1.0;
-                    Peak { mass, intensity }
+                    Peak { mass, intensity, charge: 1 }
                 })
                 .collect::<Vec<_>>();
             crate::heap::bounded_min_heapify(&mut peaks, self.take_top_n);
@@ -366,7 +376,7 @@ impl SpectrumProcessor {
                 .zip(spectrum.intensity.iter())
                 .map(|(&mass, &intensity)| {
                     let mass = (mass - PROTON) * 1.0;
-                    Peak { mass, intensity }
+                    Peak { mass, intensity, charge: 1 }
                 })
                 .collect::<Vec<_>>(),
         };

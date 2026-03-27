@@ -700,8 +700,8 @@ impl<'db> Scorer<'db> {
                     score.ppm_difference +=
                         peak.intensity * (mz - peak.mass).abs() * 2E6 / (mz + peak.mass);
 
-                    let exp_mz = peak.mass + PROTON;
-                    let calc_mz = mz + PROTON;
+                    let exp_mz = peak.mass / peak.charge as f32 + PROTON;
+                    let calc_mz = frag.monoisotopic_mass / peak.charge as f32 + PROTON;
 
                     match frag.kind {
                         Kind::A | Kind::B | Kind::C => {
@@ -724,7 +724,7 @@ impl<'db> Scorer<'db> {
                             }
                         };
                         fragments_details.kinds.push(frag.kind);
-                        fragments_details.charges.push(charge as i32);
+                        fragments_details.charges.push(peak.charge as i32);
                         fragments_details.mz_experimental.push(exp_mz);
                         fragments_details.mz_calculated.push(calc_mz);
                         fragments_details.fragment_ordinals.push(idx);
