@@ -368,7 +368,7 @@ impl SpectrumProcessor {
     }
 
     pub fn process(&self, spectrum: RawSpectrum) -> ProcessedSpectrum<Peak> {
-        let (mut peaks, mut peak_charges) = match spectrum.ms_level {
+        let (mut peaks, peak_charges) = match spectrum.ms_level {
             2 => self.process_ms2(self.deisotope, &spectrum),
             _ => {
                 let peaks = spectrum
