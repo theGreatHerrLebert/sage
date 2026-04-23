@@ -138,8 +138,12 @@ pub struct Feature {
     pub spectrum_q: f32,
     pub peptide_q: f32,
     pub protein_q: f32,
+    pub protein_group_q: f32,
 
     pub ms2_intensity: f32,
+
+    pub protein_groups: Option<String>,
+    pub num_protein_groups: u32,
 
     pub fragments: Option<Fragments>,
 }
@@ -177,14 +181,14 @@ impl ScoreType {
             // Calculate the X!Tandem hyperscore
             Self::SageHyperScore => {
                 let i = (summed_b + 1.0) as f64 * (summed_y + 1.0) as f64;
-                let score = i.ln() + lnfact(matched_b) + lnfact(matched_y);
-                score
+
+                i.ln() + lnfact(matched_b) + lnfact(matched_y)
             }
             // Calculate the OpenMS flavour hyperscore
             Self::OpenMSHyperScore => {
                 let summed_intensity = summed_b + summed_y;
-                let score = summed_intensity.ln_1p() as f64 + lnfact(matched_b) + lnfact(matched_y);
-                score
+
+                summed_intensity.ln_1p() as f64 + lnfact(matched_b) + lnfact(matched_y)
             }
         };
         if score.is_finite() {
@@ -246,7 +250,7 @@ impl<'db> Scorer<'db> {
     /// if it meets the following criterion:
     ///  * prefilter_low_memory = true: in the top `report_psms` hits for a spectrum
     ///  * prefilter_low_memory = false: has at least `min_matched_peaks` fragment ion matches
-    /// A vector of atomic bools is used to maintain an identification list across scans
+    /// * `keep`: A vector of atomic bools is used to maintain an identification list across scans
     pub fn quick_score(
         &self,
         query: &ProcessedSpectrum<Peak>,
@@ -260,7 +264,7 @@ impl<'db> Scorer<'db> {
         let precursor = query.precursors.first().unwrap_or_else(|| {
             panic!("missing MS1 precursor for {}", query.id);
         });
-        let hits = self.initial_hits(&query, precursor);
+        let hits = self.initial_hits(query, precursor);
 
         if prefilter_low_memory {
             let mut score_vector = hits
@@ -429,7 +433,7 @@ impl<'db> Scorer<'db> {
                     hits
                 },
             )
-        } else if precursor.charge.is_some() && self.override_precursor_charge == false {
+        } else if precursor.charge.is_some() && !self.override_precursor_charge {
             let charge = precursor.charge.unwrap();
             // Charge state is already annotated for this precusor, only search once
             let precursor_mass = mz * charge as f32;
@@ -514,14 +518,12 @@ impl<'db> Scorer<'db> {
                 .map(|score| score.0.hyperscore)
                 .expect("we know that index 0 is valid");
 
-            // Poisson distribution probability mass function
+            // Poisson distribution log10 probability mass function
+            // Computed directly in log space to avoid overflow from lambda.powi(k)
+            // log10(PMF) = (k*ln(lambda) - lambda - lnfact(k)) / ln(10)
             let k = score.matched_b + score.matched_y;
-            let mut poisson = lambda.powi(k as i32) * f64::exp(-lambda) / lnfact(k).exp();
-
-            if poisson.is_infinite() {
-                // Approximately the smallest positive non-zero value representable by f64
-                poisson = 1E-325;
-            }
+            let log10_poisson =
+                (k as f64 * lambda.ln() - lambda - lnfact(k)) / std::f64::consts::LN_10;
 
             let isotope_error = score.isotope_error as f32 * NEUTRON;
             let delta_mass = (precursor_mass - peptide.monoisotopic - isotope_error) * 2E6
@@ -557,7 +559,11 @@ impl<'db> Scorer<'db> {
                 matched_peaks: k as u32,
                 matched_intensity_pct: 100.0 * (score.summed_b + score.summed_y)
                     / query.total_ion_current,
-                poisson: poisson.log10(),
+                poisson: if log10_poisson.is_finite() {
+                    log10_poisson
+                } else {
+                    f64::NEG_INFINITY
+                },
                 longest_b: score.longest_b as u32,
                 longest_y: score.longest_y as u32,
                 longest_y_pct: score.longest_y as f32 / (peptide.sequence.len() as f32),
@@ -579,7 +585,10 @@ impl<'db> Scorer<'db> {
                 ms2_intensity: score.summed_b + score.summed_y,
 
                 //Fragments
+                protein_groups: None,
+                num_protein_groups: 0,
                 fragments,
+                protein_group_q: 1.0,
             })
         }
     }

@@ -11,7 +11,7 @@ use itertools::Itertools;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Default)]
 pub struct Peptide {
     pub decoy: bool,
     pub sequence: Arc<[u8]>,
@@ -492,7 +492,7 @@ mod test {
             min_len: 0,
             max_len: 50,
             missed_cleavages: 0,
-            enyzme: Enzyme::new("KR", Some('P'), true, false),
+            enzyme: Enzyme::new("KR", "P", true, false),
         };
 
         let peptides = tryp
@@ -684,7 +684,7 @@ mod test {
             missed_cleavages: 0,
             min_len: 3,
             max_len: 30,
-            enyzme: Enzyme::new("KR", Some('P'), true, false),
+            enzyme: Enzyme::new("KR", "P", true, false),
         };
 
         let fwd = "MADEEKLPPGWEKRMSRSSGRVYYFNHITNASQWERPSGN";

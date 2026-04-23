@@ -137,37 +137,29 @@ impl RawSpectrum {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Representation {
+    #[default]
     Profile,
     Centroid,
 }
 
-impl Default for Representation {
-    fn default() -> Self {
-        Self::Profile
-    }
-}
-
+#[derive(Default)]
 pub enum MS1Spectra {
     NoMobility(Vec<ProcessedSpectrum<Peak>>),
     WithMobility(Vec<ProcessedSpectrum<IMPeak>>),
+    #[default]
     Empty,
-}
-
-impl Default for MS1Spectra {
-    fn default() -> Self {
-        Self::Empty
-    }
 }
 
 /// Binary search followed by linear search to select the most intense peak within `tolerance` window
 /// * `offset` - this parameter allows for a static adjustment to the lower and upper bounds of the search window.
-///     Sage subtracts a proton (and assumes z=1) for all experimental peaks, and stores all fragments as monoisotopic
-///     masses. This simplifies downstream calculations at multiple charge states, but it also subtly changes tolerance
-///     bounds. For most applications this is completely OK to ignore - however, for exact similarity of TMT reporter ion
-///     measurements with ProteomeDiscoverer, FragPipe, etc, we need to account for this minor difference (which has an impact
-///     perhaps 0.01% of the time)
+///
+/// Sage subtracts a proton (and assumes z=1) for all experimental peaks, and stores all fragments as monoisotopic
+/// masses. This simplifies downstream calculations at multiple charge states, but it also subtly changes tolerance
+/// bounds. For most applications this is completely OK to ignore - however, for exact similarity of TMT reporter ion
+/// measurements with ProteomeDiscoverer, FragPipe, etc, we need to account for this minor difference (which has an impact
+/// perhaps 0.01% of the time)
 pub fn select_most_intense_peak(
     peaks: &[Peak],
     center: f32,
