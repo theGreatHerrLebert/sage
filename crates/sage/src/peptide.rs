@@ -10,7 +10,7 @@ use fnv::FnvHashSet;
 use itertools::Itertools;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 
 /// Per-residue modification masses, stored **sparsely**: only the residue
 /// positions carrying a nonzero mass-delta, sorted ascending by index, with no
@@ -28,8 +28,14 @@ use smallvec::{smallvec, SmallVec};
 /// All construction / mutation goes through [`Mods::set_if_unmodified`] (or
 /// [`Mods::from_dense`] for the reverse/shuffle remap), which preserve the
 /// canonical invariant. Mod masses are assumed finite (NaN rejected at config).
+///
+/// Storage is `Box<[(u16,f32)]>` (thin 16-byte fat pointer; empty = no heap
+/// allocation) rather than `SmallVec` inline storage: most peptides are
+/// unmodified, so a 16-byte field beats a 32-byte inline buffer when 400M+
+/// `Peptide` structs sit in one contiguous `Vec` (the memory wall is that
+/// Vec's doubling, i.e. struct-size x count).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Mods(SmallVec<[(u16, f32); 2]>);
+pub struct Mods(Box<[(u16, f32)]>);
 
 impl Mods {
     /// Mass-delta at residue index `i` (0.0 if that residue is unmodified).
@@ -65,7 +71,13 @@ impl Mods {
         let key = i as u16;
         match self.0.binary_search_by(|(idx, _)| idx.cmp(&key)) {
             Ok(_) => {} // already modified — no-op
-            Err(pos) => self.0.insert(pos, (key, mass)),
+            Err(pos) => {
+                // Box<[_]> is fixed-size: take ownership, insert via Vec, refreeze.
+                // Mutations are rare (a few residue mods per modified peptide).
+                let mut v = std::mem::take(&mut self.0).into_vec();
+                v.insert(pos, (key, mass));
+                self.0 = v.into_boxed_slice();
+            }
         }
     }
 
@@ -106,13 +118,13 @@ impl Mods {
             "dense mod length {} exceeds u16 index range",
             dense.len()
         );
-        let mut v: SmallVec<[(u16, f32); 2]> = SmallVec::new();
+        let mut v: Vec<(u16, f32)> = Vec::new();
         for (i, &m) in dense.iter().enumerate() {
             if m != 0.0 {
                 v.push((i as u16, m));
             }
         }
-        Mods(v)
+        Mods(v.into_boxed_slice())
     }
 
     /// Reproduce `Vec<f32>::partial_cmp(...).unwrap_or(Equal)` over the dense
@@ -180,10 +192,11 @@ pub struct Peptide {
     /// Where is this peptide located in the protein?
     pub position: Position,
 
-    /// Proteins this peptide maps to. Inline storage for the common
-    /// single-protein case; spills to the heap only for shared peptides
-    /// (populated during dedup in `reorder_peptides`).
-    pub proteins: SmallVec<[Arc<str>; 1]>,
+    /// Proteins this peptide maps to (usually exactly one). Stored as a thin
+    /// `Box<[_]>` (16-byte fat pointer) rather than `Vec`/`SmallVec` to keep the
+    /// `Peptide` struct small in the giant peptide `Vec`; the protein list is
+    /// only mutated during dedup in `reorder_peptides` (rare).
+    pub proteins: Box<[Arc<str>]>,
 }
 
 impl Peptide {
@@ -561,7 +574,7 @@ impl TryFrom<DigestGroup> for Peptide {
 
     fn try_from(value: DigestGroup) -> Result<Self, Self::Error> {
         let mut pep = Peptide::try_from(value.reference)?;
-        pep.proteins = SmallVec::from_vec(value.proteins);
+        pep.proteins = value.proteins.into_boxed_slice();
         Ok(pep)
     }
 }
@@ -594,7 +607,7 @@ impl TryFrom<Digest> for Peptide {
             cterm: None,
             missed_cleavages: value.missed_cleavages,
             semi_enzymatic: value.semi_enzymatic,
-            proteins: smallvec![value.protein],
+            proteins: vec![value.protein].into_boxed_slice(),
         })
     }
 }
@@ -1006,3 +1019,8 @@ mod test {
         );
     }
 }
+
+
+#[cfg(test)]
+mod size_probe2 { use super::*;
+  #[test] fn s(){ eprintln!("PEPTIDE_SIZE={} MODS_SIZE={}", std::mem::size_of::<Peptide>(), std::mem::size_of::<Mods>()); }}

@@ -270,7 +270,11 @@ impl Parameters {
                 && remove.nterm == keep.nterm
                 && remove.cterm == keep.cterm
             {
-                keep.proteins.extend(remove.proteins.iter().cloned());
+                // proteins is Box<[_]> (fixed size): merge via Vec then refreeze.
+                // Only happens for shared peptides during dedup, so rare.
+                let mut merged = std::mem::take(&mut keep.proteins).into_vec();
+                merged.extend(remove.proteins.iter().cloned());
+                keep.proteins = merged.into_boxed_slice();
                 // When merging peptides from different Fastas,
                 // decoys in one fasta might be targets in another
                 keep.decoy &= remove.decoy;
