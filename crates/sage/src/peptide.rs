@@ -10,12 +10,175 @@ use fnv::FnvHashSet;
 use itertools::Itertools;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
+use smallvec::SmallVec;
+
+/// Per-residue modification masses, stored **sparsely**: only the residue
+/// positions carrying a nonzero mass-delta, sorted ascending by index, with no
+/// duplicate indices. An unmodified peptide stores an empty list.
+///
+/// This canonical form (sorted / unique / nonzero-only) makes the derived
+/// `PartialEq` correct for de-duplication (two peptides have equal residue mods
+/// iff their sparse lists are equal), and [`Mods::cmp_dense`] reproduces the
+/// historical dense `Vec<f32>` ordering used by [`Peptide::initial_sort`].
+///
+/// Memory: replaces the eager `vec![0.0; sequence.len()]` (one heap allocation
+/// per peptide, almost always all zeros for typical searches) with inline
+/// storage for up to 2 modified sites — the common case allocates nothing.
+///
+/// All construction / mutation goes through [`Mods::set_if_unmodified`] (or
+/// [`Mods::from_dense`] for the reverse/shuffle remap), which preserve the
+/// canonical invariant. Mod masses are assumed finite (NaN rejected at config).
+///
+/// Storage is `Box<[(u16,f32)]>` (thin 16-byte fat pointer; empty = no heap
+/// allocation) rather than `SmallVec` inline storage: most peptides are
+/// unmodified, so a 16-byte field beats a 32-byte inline buffer when 400M+
+/// `Peptide` structs sit in one contiguous `Vec` (the memory wall is that
+/// Vec's doubling, i.e. struct-size x count).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Mods(Box<[(u16, f32)]>);
+
+impl Mods {
+    /// Mass-delta at residue index `i` (0.0 if that residue is unmodified).
+    #[inline]
+    pub fn mass_at(&self, i: usize) -> f32 {
+        let key = i as u16;
+        for &(idx, mass) in &self.0 {
+            if idx == key {
+                return mass;
+            }
+            if idx > key {
+                break; // sorted — no entry for `i`
+            }
+        }
+        0.0
+    }
+
+    /// Set residue `i` to `mass` **iff** it is currently unmodified. Mirrors the
+    /// historical `if modifications[i] == 0.0 { modifications[i] = mass }` guard.
+    ///
+    /// Self-enforces the canonical invariant: a zero `mass` is a no-op (never
+    /// stored), so `Mods` can never hold an explicit-zero entry that would make
+    /// derived `PartialEq` diverge from dense equality during dedup. (Config
+    /// validation also rejects zero-mass mods; this guard is belt-and-suspenders.)
+    pub fn set_if_unmodified(&mut self, i: usize, mass: f32) {
+        if mass == 0.0 {
+            return;
+        }
+        debug_assert!(
+            i <= u16::MAX as usize,
+            "residue index {i} exceeds u16; max peptide length must be <= 65535"
+        );
+        let key = i as u16;
+        match self.0.binary_search_by(|(idx, _)| idx.cmp(&key)) {
+            Ok(_) => {} // already modified — no-op
+            Err(pos) => {
+                // Box<[_]> is fixed-size: take ownership, insert via Vec, refreeze.
+                // Mutations are rare (a few residue mods per modified peptide).
+                let mut v = std::mem::take(&mut self.0).into_vec();
+                v.insert(pos, (key, mass));
+                self.0 = v.into_boxed_slice();
+            }
+        }
+    }
+
+    /// Sum of all residue mod masses (N/C-term masses are tracked separately).
+    #[inline]
+    pub fn total(&self) -> f32 {
+        self.0.iter().map(|&(_, m)| m).sum()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Iterate the modified `(residue_index, mass)` pairs, sorted by index.
+    pub fn iter(&self) -> impl Iterator<Item = (usize, f32)> + '_ {
+        self.0.iter().map(|&(i, m)| (i as usize, m))
+    }
+
+    /// Materialise the dense per-residue vector of length `len` (0.0 at
+    /// unmodified positions). Used at the reverse/shuffle remap sites and for
+    /// the FFI/Display dense view.
+    pub fn to_dense(&self, len: usize) -> Vec<f32> {
+        let mut dense = vec![0.0f32; len];
+        for &(i, m) in &self.0 {
+            if (i as usize) < len {
+                dense[i as usize] = m;
+            }
+        }
+        dense
+    }
+
+    /// Build the canonical sparse form from a dense vector (drops zeros, which
+    /// also drops `-0.0` since `-0.0 != 0.0` is false).
+    pub fn from_dense(dense: &[f32]) -> Self {
+        debug_assert!(
+            dense.len() <= u16::MAX as usize + 1,
+            "dense mod length {} exceeds u16 index range",
+            dense.len()
+        );
+        let mut v: Vec<(u16, f32)> = Vec::new();
+        for (i, &m) in dense.iter().enumerate() {
+            if m != 0.0 {
+                v.push((i as u16, m));
+            }
+        }
+        Mods(v.into_boxed_slice())
+    }
+
+    /// Reproduce `Vec<f32>::partial_cmp(...).unwrap_or(Equal)` over the dense
+    /// view. Only called when comparing peptides of identical sequence (hence
+    /// identical length) — see [`Peptide::initial_sort`] — so the dense
+    /// lengths match and this is a pure lexicographic comparison with 0.0 at
+    /// gaps. Walks both sorted sparse lists by ascending index.
+    pub fn cmp_dense(&self, other: &Self) -> Ordering {
+        let (a, b) = (&self.0, &other.0);
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < a.len() && j < b.len() {
+            let (ai, am) = a[i];
+            let (bj, bm) = b[j];
+            let ord = if ai == bj {
+                let o = am.partial_cmp(&bm).unwrap_or(Ordering::Equal);
+                i += 1;
+                j += 1;
+                o
+            } else if ai < bj {
+                let o = am.partial_cmp(&0.0).unwrap_or(Ordering::Equal);
+                i += 1;
+                o
+            } else {
+                let o = 0.0f32.partial_cmp(&bm).unwrap_or(Ordering::Equal);
+                j += 1;
+                o
+            };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        while i < a.len() {
+            let o = a[i].1.partial_cmp(&0.0).unwrap_or(Ordering::Equal);
+            if o != Ordering::Equal {
+                return o;
+            }
+            i += 1;
+        }
+        while j < b.len() {
+            let o = 0.0f32.partial_cmp(&b[j].1).unwrap_or(Ordering::Equal);
+            if o != Ordering::Equal {
+                return o;
+            }
+            j += 1;
+        }
+        Ordering::Equal
+    }
+}
 
 #[derive(Clone, PartialEq, Default)]
 pub struct Peptide {
     pub decoy: bool,
     pub sequence: Arc<[u8]>,
-    pub modifications: Vec<f32>,
+    pub modifications: Mods,
     /// Modification on peptide C-terminus
     pub nterm: Option<f32>,
     /// Modification on peptide C-terminus
@@ -29,18 +192,18 @@ pub struct Peptide {
     /// Where is this peptide located in the protein?
     pub position: Position,
 
-    pub proteins: Vec<Arc<str>>,
+    /// Proteins this peptide maps to (usually exactly one). Stored as a thin
+    /// `Box<[_]>` (16-byte fat pointer) rather than `Vec`/`SmallVec` to keep the
+    /// `Peptide` struct small in the giant peptide `Vec`; the protein list is
+    /// only mutated during dedup in `reorder_peptides` (rare).
+    pub proteins: Box<[Arc<str>]>,
 }
 
 impl Peptide {
     pub fn initial_sort(&self, other: &Self) -> std::cmp::Ordering {
         self.sequence
             .cmp(&other.sequence)
-            .then_with(|| {
-                self.modifications
-                    .partial_cmp(&other.modifications)
-                    .unwrap_or(Ordering::Equal)
-            })
+            .then_with(|| self.modifications.cmp_dense(&other.modifications))
             .then_with(|| {
                 self.nterm
                     .partial_cmp(&other.nterm)
@@ -120,18 +283,15 @@ impl Peptide {
                 }
             }
             ModificationSpecificity::Residue(resi) => self
-                .sequence
+                .modifications
                 .iter()
-                .zip(self.modifications.iter())
-                .filter(|(&r, &m)| resi == r && mass == m)
+                .filter(|&(idx, m)| mass == m && self.sequence.get(idx) == Some(&resi))
                 .count(),
         }
     }
 
     fn modification_mass(&self) -> f32 {
-        self.modifications.iter().sum::<f32>()
-            + self.nterm.unwrap_or(0.0)
-            + self.cterm.unwrap_or(0.0)
+        self.modifications.total() + self.nterm.unwrap_or(0.0) + self.cterm.unwrap_or(0.0)
     }
 
     /// Apply all variable mods in `sites` to self
@@ -148,65 +308,13 @@ impl Peptide {
                 }
             }
             Site::Sequence(index) => {
-                if self.modifications[index as usize] == 0.0 {
-                    self.modifications[index as usize] += mass;
-                }
+                self.modifications.set_if_unmodified(index as usize, mass);
             }
         }
     }
 
     fn push_resi(&self, acc: &mut Vec<(Site, f32)>, target: ModificationSpecificity, mass: f32) {
-        match (target, self.position) {
-            (ModificationSpecificity::PeptideN(None), _) => acc.push((Site::Nterm, mass)),
-            (ModificationSpecificity::PeptideN(Some(resi)), _)
-            if resi == *self.sequence.first().unwrap_or(&0) =>
-                {
-                    acc.push((Site::Sequence(0), mass))
-                }
-            (ModificationSpecificity::PeptideC(None), _) => acc.push((Site::Cterm, mass)),
-            (ModificationSpecificity::PeptideC(Some(resi)), _)
-            if resi == *self.sequence.last().unwrap_or(&0) =>
-                {
-                    acc.push((
-                        Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
-                        mass,
-                    ))
-                }
-            (ModificationSpecificity::ProteinN(None), Position::Nterm | Position::Full) => {
-                acc.push((Site::Nterm, mass))
-            }
-            (ModificationSpecificity::ProteinN(Some(resi)), Position::Nterm | Position::Full)
-            if resi == *self.sequence.first().unwrap_or(&0) =>
-                {
-                    acc.push((Site::Sequence(0), mass))
-                }
-            (ModificationSpecificity::ProteinC(None), Position::Cterm | Position::Full) => {
-                acc.push((Site::Cterm, mass))
-            }
-            (ModificationSpecificity::ProteinC(Some(resi)), Position::Cterm | Position::Full)
-            if resi == *self.sequence.last().unwrap_or(&0) =>
-                {
-                    acc.push((
-                        Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
-                        mass,
-                    ))
-                }
-            (ModificationSpecificity::Residue(resi), _) => {
-                acc.extend(
-                    self.sequence
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, residue)| {
-                            if resi == *residue {
-                                Some((Site::Sequence(idx as u32), mass))
-                            } else {
-                                None
-                            }
-                        }),
-                );
-            }
-            _ => {}
-        }
+        discover_mod_sites(&self.sequence, self.position, acc, target, mass);
     }
 
     fn static_mods(&mut self, target: ModificationSpecificity, mass: f32) {
@@ -246,10 +354,16 @@ impl Peptide {
                     )
                 }
             (ModificationSpecificity::Residue(resi), _) => {
-                for (idx, residue) in self.sequence.iter().enumerate() {
-                    if resi == *residue && self.modifications[idx] == 0.0 {
-                        self.modifications[idx] = mass;
-                    }
+                // Collect first to avoid borrowing `self.sequence` while mutating
+                // `self.modifications`; set_if_unmodified preserves the guard.
+                let positions: SmallVec<[usize; 8]> = self
+                    .sequence
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, residue)| (resi == *residue).then_some(idx))
+                    .collect();
+                for idx in positions {
+                    self.modifications.set_if_unmodified(idx, mass);
                 }
             }
             _ => {}
@@ -312,7 +426,8 @@ impl Peptide {
         let n = pep.sequence.len();
         if n > 1 {
             let mut s = Vec::from(pep.sequence.as_ref());
-            let mut m = pep.modifications.clone();
+            // Materialise dense, reuse the proven dense remap, re-canonicalise.
+            let mut m = pep.modifications.to_dense(n);
 
             if keep_ends {
                 let n_sub_1 = n.saturating_sub(1);
@@ -328,7 +443,7 @@ impl Peptide {
             }
 
             pep.sequence = Arc::from(s.into_boxed_slice());
-            pep.modifications = m;
+            pep.modifications = Mods::from_dense(&m);
         }
         pep
     }
@@ -339,7 +454,8 @@ impl Peptide {
         let n = pep.sequence.len();
         if n > 1 {
             let mut s = Vec::from(pep.sequence.as_ref());
-            let mut m = pep.modifications.clone();
+            // Materialise dense, reuse the proven dense remap, re-canonicalise.
+            let mut m = pep.modifications.to_dense(n);
             let mut rng = thread_rng();
 
             if keep_ends {
@@ -371,10 +487,104 @@ impl Peptide {
             }
 
             pep.sequence = Arc::from(s.into_boxed_slice());
-            pep.modifications = m;
+            pep.modifications = Mods::from_dense(&m);
         }
         pep
     }
+}
+
+/// Site-discovery for a variable/static modification target, factored out of
+/// `Peptide::push_resi` so it can be driven from just a sequence + position
+/// (e.g. the digest count pass) without building a full `Peptide`.
+fn discover_mod_sites(
+    sequence: &[u8],
+    position: Position,
+    acc: &mut Vec<(Site, f32)>,
+    target: ModificationSpecificity,
+    mass: f32,
+) {
+    match (target, position) {
+        (ModificationSpecificity::PeptideN(None), _) => acc.push((Site::Nterm, mass)),
+        (ModificationSpecificity::PeptideN(Some(resi)), _)
+            if resi == *sequence.first().unwrap_or(&0) =>
+        {
+            acc.push((Site::Sequence(0), mass))
+        }
+        (ModificationSpecificity::PeptideC(None), _) => acc.push((Site::Cterm, mass)),
+        (ModificationSpecificity::PeptideC(Some(resi)), _)
+            if resi == *sequence.last().unwrap_or(&0) =>
+        {
+            acc.push((
+                Site::Sequence(sequence.len().saturating_sub(1) as u32),
+                mass,
+            ))
+        }
+        (ModificationSpecificity::ProteinN(None), Position::Nterm | Position::Full) => {
+            acc.push((Site::Nterm, mass))
+        }
+        (ModificationSpecificity::ProteinN(Some(resi)), Position::Nterm | Position::Full)
+            if resi == *sequence.first().unwrap_or(&0) =>
+        {
+            acc.push((Site::Sequence(0), mass))
+        }
+        (ModificationSpecificity::ProteinC(None), Position::Cterm | Position::Full) => {
+            acc.push((Site::Cterm, mass))
+        }
+        (ModificationSpecificity::ProteinC(Some(resi)), Position::Cterm | Position::Full)
+            if resi == *sequence.last().unwrap_or(&0) =>
+        {
+            acc.push((
+                Site::Sequence(sequence.len().saturating_sub(1) as u32),
+                mass,
+            ))
+        }
+        (ModificationSpecificity::Residue(resi), _) => {
+            acc.extend(sequence.iter().enumerate().filter_map(|(idx, residue)| {
+                if resi == *residue {
+                    Some((Site::Sequence(idx as u32), mass))
+                } else {
+                    None
+                }
+            }));
+        }
+        _ => {}
+    }
+}
+
+/// Number of peptides `apply()` would return for a peptide with this
+/// `sequence`/`position`, computed WITHOUT allocating any of them. Mirrors the
+/// `apply()` else-branch exactly (same site discovery, same
+/// `combinations(n).filter(no_duplicates)` plus the per-combination
+/// distinct-site set check) so it is provably equal to `apply(..).len()`.
+/// Used to pre-size the digest buffer and avoid the doubling-realloc spike.
+/// Static mods never change the count, so they are not consulted here.
+pub fn count_variants(
+    sequence: &[u8],
+    position: Position,
+    variable_mods: &[(ModificationSpecificity, f32)],
+    combinations: usize,
+) -> usize {
+    if variable_mods.is_empty() {
+        return 1;
+    }
+    let mut mods = Vec::new();
+    for (residue, mass) in variable_mods.iter() {
+        discover_mod_sites(sequence, position, &mut mods, *residue, *mass);
+    }
+    // The base (unmodified) clone, then one per valid combination.
+    let mut count = 1usize;
+    for n in 1..=combinations {
+        'next: for combination in mods.iter().combinations(n).filter(no_duplicates) {
+            let mut set = FnvHashSet::default();
+            for (site, _) in &combination {
+                if !set.insert(*site) {
+                    continue 'next;
+                }
+            }
+            count += 1;
+        }
+    }
+    count
 }
 
 fn no_duplicates(combination: &Vec<&(Site, f32)>) -> bool {
@@ -408,7 +618,7 @@ impl TryFrom<DigestGroup> for Peptide {
 
     fn try_from(value: DigestGroup) -> Result<Self, Self::Error> {
         let mut pep = Peptide::try_from(value.reference)?;
-        pep.proteins = value.proteins;
+        pep.proteins = value.proteins.into_boxed_slice();
         Ok(pep)
     }
 }
@@ -434,14 +644,14 @@ impl TryFrom<Digest> for Peptide {
         Ok(Peptide {
             decoy: value.decoy,
             position: value.position,
-            modifications: vec![0.0; value.sequence.len()],
+            modifications: Mods::default(),
             sequence: Arc::from(value.sequence.into_bytes().into_boxed_slice()),
             monoisotopic: mass,
             nterm: None,
             cterm: None,
             missed_cleavages: value.missed_cleavages,
             semi_enzymatic: value.semi_enzymatic,
-            proteins: vec![value.protein],
+            proteins: vec![value.protein].into_boxed_slice(),
         })
     }
 }
@@ -451,8 +661,9 @@ impl std::fmt::Display for Peptide {
         if let Some(m) = self.nterm {
             write!(f, "[{:+}]-", m)?;
         }
-        for (c, m) in self.sequence.iter().zip(self.modifications.iter()) {
-            if *m != 0.0 {
+        for (i, c) in self.sequence.iter().enumerate() {
+            let m = self.modifications.mass_at(i);
+            if m != 0.0 {
                 write!(f, "{}[{:+}]", *c as char, m)?;
             } else {
                 write!(f, "{}", *c as char)?;
@@ -470,6 +681,80 @@ mod test {
     use crate::enzyme::{Enzyme, EnzymeParameters};
 
     use super::*;
+
+    // ---- Mods sparse-representation correctness gate (Codex review) ----
+    // The sparse Mods must reproduce the historical dense Vec<f32> semantics
+    // exactly: equality (for dedup) and ordering (for initial_sort -> PeptideIx).
+
+    fn dense_cmp(a: &[f32], b: &[f32]) -> Ordering {
+        a.partial_cmp(b).unwrap_or(Ordering::Equal)
+    }
+
+    #[test]
+    fn mods_roundtrip_and_mass_at() {
+        let dense = vec![0.0, 79.96633, 0.0, 0.0, 15.994915, 0.0];
+        let m = Mods::from_dense(&dense);
+        // mass_at reproduces dense indexing
+        for (i, &v) in dense.iter().enumerate() {
+            assert_eq!(m.mass_at(i), v, "mass_at({i})");
+        }
+        // to_dense round-trips
+        assert_eq!(m.to_dense(dense.len()), dense);
+        // total matches dense sum
+        assert!((m.total() - dense.iter().sum::<f32>()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mods_empty_equals_all_zeros() {
+        // canonical invariant: unmodified (empty) compares equal to a dense all-zero
+        let empty = Mods::default();
+        let from_zeros = Mods::from_dense(&[0.0, 0.0, 0.0]);
+        assert_eq!(empty, from_zeros, "all-zero dense must canonicalize to empty");
+        assert_eq!(empty.cmp_dense(&from_zeros), Ordering::Equal);
+    }
+
+    #[test]
+    fn mods_set_if_unmodified_guard() {
+        let mut m = Mods::default();
+        m.set_if_unmodified(2, 10.0);
+        m.set_if_unmodified(2, 99.0); // already modified -> no-op (mirrors `== 0.0` guard)
+        assert_eq!(m.mass_at(2), 10.0);
+        m.set_if_unmodified(0, -17.0); // negative mass (pyro-glu) must be supported + sorted
+        assert_eq!(m.to_dense(3), vec![-17.0, 0.0, 10.0]);
+    }
+
+    #[test]
+    fn mods_zero_mass_never_stored() {
+        // Self-enforcing canonical invariant: a 0.0 set is a no-op, so it can
+        // never break derived-PartialEq dedup against an unmodified peptide.
+        let mut m = Mods::default();
+        m.set_if_unmodified(1, 0.0);
+        assert!(m.is_empty(), "zero-mass set must not create an entry");
+        assert_eq!(m, Mods::default());
+    }
+
+    #[quickcheck_macros::quickcheck]
+    fn mods_cmp_matches_dense(a: Vec<u8>, b: Vec<u8>) -> bool {
+        // Build equal-length dense vectors from small byte payloads mapped to a
+        // few realistic mod masses incl. 0.0 and a negative; compare sparse vs
+        // dense ordering AND equality. Only the equal-length case is meaningful
+        // (initial_sort/dedup compare same-sequence => same-length peptides).
+        let masses = [0.0f32, 15.994915, 79.96633, -17.026549, 42.010565];
+        let n = a.len().min(b.len());
+        let da: Vec<f32> = a[..n].iter().map(|&x| masses[(x as usize) % masses.len()]).collect();
+        let db: Vec<f32> = b[..n].iter().map(|&x| masses[(x as usize) % masses.len()]).collect();
+        let ma = Mods::from_dense(&da);
+        let mb = Mods::from_dense(&db);
+        // ordering fidelity
+        if ma.cmp_dense(&mb) != dense_cmp(&da, &db) {
+            return false;
+        }
+        // equality fidelity (drives dedup correctness)
+        if (ma == mb) != (da == db) {
+            return false;
+        }
+        true
+    }
 
     fn var_mod_sequence(
         peptide: &Peptide,
@@ -734,6 +1019,59 @@ mod test {
         assert_eq!(peptides, expected);
     }
 
+    // E1 gate: count_variants() must equal apply(..).len() exactly, since it is
+    // used to pre-size the digest buffer. If it ever under-counts, the parallel
+    // fill would re-allocate (the spike we are trying to remove) or worse.
+    #[test]
+    fn count_variants_matches_apply_len() {
+        use ModificationSpecificity::*;
+        let static_mods = HashMap::default();
+
+        let sequences = [
+            "AACAACAA",
+            "MPEPTIDEK",
+            "MSAGEK",
+            "END",
+            "ACDEFGHIKMNPQRSTVWY",
+            "K",
+            "CCCCCC",
+        ];
+
+        let mod_sets: [&[(ModificationSpecificity, f32)]; 5] = [
+            &[],
+            &[(Residue(b'C'), 16.0)],
+            &[(Residue(b'C'), 16.0), (Residue(b'M'), 16.0)],
+            // multiple variable mods competing for the same N-term slot
+            &[(PeptideN(None), 42.0), (PeptideN(Some(b'M')), 12.0)],
+            &[
+                (ProteinN(None), 42.0),
+                (ProteinC(None), 11.0),
+                (PeptideN(None), 12.0),
+                (PeptideC(None), 19.0),
+                (Residue(b'A'), 7.0),
+            ],
+        ];
+
+        for seq in sequences {
+            let peptide = Peptide::try_from(Digest {
+                sequence: seq.into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+            for mods in mod_sets {
+                for combo in 0..=4 {
+                    let counted = count_variants(&peptide.sequence, peptide.position, mods, combo);
+                    let applied = peptide.clone().apply(mods, &static_mods, combo).len();
+                    assert_eq!(
+                        counted, applied,
+                        "count_variants mismatch: seq={seq:?} mods={mods:?} combo={combo}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn modification_sites() {
         use Site::*;
@@ -778,3 +1116,5 @@ mod test {
         );
     }
 }
+
+

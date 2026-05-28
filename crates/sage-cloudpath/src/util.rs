@@ -90,7 +90,17 @@ pub fn read_tdf<S: AsRef<str>>(
     bruker_spectrum_processor: BrukerProcessingConfig,
     requires_ms1: bool,
 ) -> Result<Vec<RawSpectrum>, Error> {
-    let res = crate::tdf::TdfReader.parse(s, file_id, bruker_spectrum_processor, requires_ms1);
+    // timsrust opens a Bruker `.d` as a local directory and cannot parse a
+    // `file://` URL. The runner normalises local inputs to `file://` URLs
+    // (mzml_paths is Vec<Url>), so convert such a URL back to a filesystem path
+    // here; any other string is already a bare path and is passed through.
+    let raw = s.as_ref();
+    let local_path: Option<String> = crate::try_parse_url(raw)
+        .filter(|u| u.scheme() == "file")
+        .and_then(|u| u.to_file_path().ok())
+        .map(|p| p.to_string_lossy().into_owned());
+    let path: &str = local_path.as_deref().unwrap_or(raw);
+    let res = crate::tdf::TdfReader.parse(path, file_id, bruker_spectrum_processor, requires_ms1);
     match res {
         Ok(t) => Ok(t),
         Err(e) => Err(Error::TDF(e)),

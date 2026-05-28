@@ -3,7 +3,7 @@ use crate::fasta::Fasta;
 use crate::ion_series::{IonSeries, Kind};
 use crate::mass::Tolerance;
 use crate::modification::{validate_mods, validate_var_mods, ModificationSpecificity};
-use crate::peptide::Peptide;
+use crate::peptide::{count_variants, Peptide};
 use dashmap::DashSet;
 use fnv::FnvBuildHasher;
 use rayon::prelude::*;
@@ -12,6 +12,24 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::Hash;
 use bincode::{Decode, Encode};
+
+/// Resident set size of this process in GB (Linux only; 0.0 elsewhere).
+/// Used for [PHASE] memory-profiling log lines in digest()/build().
+#[cfg(target_os = "linux")]
+fn cp_rss_gb() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|n| n.parse::<f64>().ok())
+        })
+        .map(|kb| kb / (1024.0 * 1024.0))
+        .unwrap_or(0.0)
+}
+#[cfg(not(target_os = "linux"))]
+fn cp_rss_gb() -> f64 { 0.0 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct EnzymeBuilder {
@@ -166,6 +184,11 @@ impl Parameters {
         // Generate all tryptic peptide sequences, including reversed (decoy)
         // and missed cleavages, if applicable.
         let digests = fasta.digest(&enzyme);
+        log::info!(
+            "[PHASE] digest-fasta-done | rss={:.2}GB | {} raw digests",
+            cp_rss_gb(),
+            digests.len()
+        );
 
         log::trace!("grouping digests");
         let start_num = digests.len();
@@ -190,29 +213,93 @@ impl Parameters {
                 targets.insert(digest.reference.sequence.clone().into_bytes());
             });
 
+        log::info!(
+            "[PHASE] digest-grouped-done | rss={:.2}GB | {} raw -> {} groups",
+            cp_rss_gb(),
+            start_num,
+            digests.len()
+        );
         log::trace!("modifying peptides");
-        let mut target_decoys = digests
-            .into_par_iter()
-            .map(Peptide::try_from)
-            .filter_map(Result::ok)
-            .flat_map_iter(|peptide| {
-                peptide
-                    .apply(&mods, &self.static_mods, self.max_variable_mods)
-                    .into_iter()
-                    .filter(|peptide| {
-                        peptide.monoisotopic >= self.peptide_min_mass
-                            && peptide.monoisotopic <= self.peptide_max_mass
-                    })
-                    .flat_map(|peptide| {
-                        if self.generate_decoys {
-                            vec![peptide.reverse(true), peptide].into_iter()
-                        } else {
-                            vec![peptide].into_iter()
-                        }
-                    })
-                    .filter(|peptide| !peptide.decoy || !targets.contains(&(peptide.sequence[..])))
+        // Pre-size the target/decoy buffer so the parallel fill below never
+        // grows by doubling (the realloc spike was the OOM-abort cause at
+        // full scale). count_variants is the apply() output count, which the
+        // mass filter and decoy/target dedup only REMOVE from, so this is a
+        // true UPPER bound. It can over-count when a very restrictive mass
+        // window discards most mod variants; we therefore reserve with
+        // try_reserve_exact and fall back to growth-on-demand if the (virtual)
+        // reservation is rejected, so a pathological config degrades instead of
+        // aborting. The reservation costs only address space, not RSS, which
+        // tracks the elements actually written.
+        let decoy_factor = if self.generate_decoys { 2 } else { 1 };
+        let capacity_hint: usize = digests
+            .par_iter()
+            .map(|group| {
+                decoy_factor
+                    * count_variants(
+                        group.reference.sequence.as_bytes(),
+                        group.reference.position,
+                        &mods,
+                        self.max_variable_mods,
+                    )
             })
-            .collect::<Vec<_>>();
+            .sum();
+
+        // Materialise in chunks so the rayon collect's transient buffer (a
+        // per-thread LinkedList<Vec<Peptide>> that a single .collect() over all
+        // groups would grow to the FULL peptide-set size) is bounded to one
+        // chunk. Each chunk's variants are par_extend-ed into the pre-sized
+        // `target_decoys`, which does not re-allocate while filling because we
+        // reserved an upper bound up front. Peak ≈ final Vec + one chunk, not
+        // final + full transient. Chunk order does not affect output:
+        // reorder_peptides() sorts + dedups (with a canonical protein sort)
+        // before PeptideIx is assigned, so the result depends only on the
+        // peptide multiset.
+        let mut target_decoys: Vec<Peptide> = Vec::new();
+        let reserved = target_decoys.try_reserve_exact(capacity_hint).is_ok();
+        log::info!(
+            "[PHASE] digest-capacity-hint | rss={:.2}GB | {} peptide slots ({})",
+            cp_rss_gb(),
+            capacity_hint,
+            if reserved { "reserved" } else { "rejected, growing on demand" }
+        );
+        const DIGEST_CHUNK_GROUPS: usize = 1 << 20; // ~1.05M groups / chunk
+        let mut digests_iter = digests.into_iter();
+        loop {
+            let chunk: Vec<_> = digests_iter.by_ref().take(DIGEST_CHUNK_GROUPS).collect();
+            if chunk.is_empty() {
+                break;
+            }
+            target_decoys.par_extend(
+                chunk
+                    .into_par_iter()
+                    .map(Peptide::try_from)
+                    .filter_map(Result::ok)
+                    .flat_map_iter(|peptide| {
+                        peptide
+                            .apply(&mods, &self.static_mods, self.max_variable_mods)
+                            .into_iter()
+                            .filter(|peptide| {
+                                peptide.monoisotopic >= self.peptide_min_mass
+                                    && peptide.monoisotopic <= self.peptide_max_mass
+                            })
+                            .flat_map(|peptide| {
+                                if self.generate_decoys {
+                                    vec![peptide.reverse(true), peptide].into_iter()
+                                } else {
+                                    vec![peptide].into_iter()
+                                }
+                            })
+                            .filter(|peptide| {
+                                !peptide.decoy || !targets.contains(&(peptide.sequence[..]))
+                            })
+                    }),
+            );
+        }
+        log::info!(
+            "[PHASE] digest-peptides-materialized | rss={:.2}GB | {} peptides (post mod-apply + decoy-gen)",
+            cp_rss_gb(),
+            target_decoys.len()
+        );
 
         Self::reorder_peptides(&mut target_decoys);
 
@@ -236,7 +323,11 @@ impl Parameters {
                 && remove.nterm == keep.nterm
                 && remove.cterm == keep.cterm
             {
-                keep.proteins.extend(remove.proteins.iter().cloned());
+                // proteins is Box<[_]> (fixed size): merge via Vec then refreeze.
+                // Only happens for shared peptides during dedup, so rare.
+                let mut merged = std::mem::take(&mut keep.proteins).into_vec();
+                merged.extend(remove.proteins.iter().cloned());
+                keep.proteins = merged.into_boxed_slice();
                 // When merging peptides from different Fastas,
                 // decoys in one fasta might be targets in another
                 keep.decoy &= remove.decoy;
@@ -270,32 +361,70 @@ impl Parameters {
         // Note that multiple charge states are actually handled by
         // [`SpectrumProcessor`] or during scoring - all theoretical
         // fragments are monoisotopic/uncharged
-        let mut fragments = target_decoys
+        // Each ion series over a length-L peptide yields exactly L-1 ions
+        // (IonSeries stops at idx == len-1), and the min_ion_index filter keeps
+        // exactly (L-1 - min_ion_index) of them per kind (both the b/y branches
+        // reduce to the same count). So this is the EXACT fragment count, not an
+        // upper bound — no over-reservation even when min_ion_index exceeds the
+        // peptide lengths (the term saturates to 0). try_reserve_exact falls
+        // back to growth-on-demand rather than aborting on genuine OOM.
+        let fragment_count: usize = target_decoys
             .par_iter()
-            .enumerate()
-            .flat_map_iter(|(idx, peptide)| {
-                // Generate both B and Y ions, then filter down to make sure that
-                // theoretical fragments are within the search space
-                self.ion_kinds
-                    .iter()
-                    .flat_map(|kind| IonSeries::new(peptide, *kind).enumerate())
-                    .filter(|(ion_idx, ion)| {
-                        // Don't store b1, b2, y1, y2 ions for preliminary scoring
-
-                        match ion.kind {
-                            Kind::A | Kind::B | Kind::C => (ion_idx + 1) > self.min_ion_index,
-                            Kind::X | Kind::Y | Kind::Z => {
-                                peptide.sequence.len().saturating_sub(1) - ion_idx
-                                    > self.min_ion_index
-                            }
-                        }
-                    })
-                    .map(move |(_, ion)| Theoretical {
-                        peptide_index: PeptideIx(idx as u32),
-                        fragment_mz: ion.monoisotopic_mass,
-                    })
+            .map(|peptide| {
+                let per_kind = peptide
+                    .sequence
+                    .len()
+                    .saturating_sub(1)
+                    .saturating_sub(self.min_ion_index);
+                self.ion_kinds.len() * per_kind
             })
-            .collect::<Vec<_>>();
+            .sum();
+        // Same chunking as peptide materialisation: a single .collect() over all
+        // peptides would grow a transient buffer to the FULL fragment-set size
+        // (~1.5B Theoretical at full scale). Chunk over peptide index ranges so
+        // the transient is bounded to one chunk; par_extend into the pre-sized
+        // `fragments`. PeptideIx is the global peptide index (start + local), so
+        // fragments are tagged identically to the monolithic build; the
+        // subsequent global sort makes emission order irrelevant.
+        let mut fragments: Vec<Theoretical> = Vec::new();
+        let _ = fragments.try_reserve_exact(fragment_count);
+        const FRAG_CHUNK_PEPTIDES: usize = 1 << 22; // ~4.2M peptides / chunk
+        let n_peptides = target_decoys.len();
+        let mut start = 0;
+        while start < n_peptides {
+            let end = (start + FRAG_CHUNK_PEPTIDES).min(n_peptides);
+            fragments.par_extend(
+                target_decoys[start..end]
+                    .par_iter()
+                    .enumerate()
+                    .flat_map_iter(|(local_idx, peptide)| {
+                        let idx = start + local_idx;
+                        // Generate both B and Y ions, then filter down to make sure that
+                        // theoretical fragments are within the search space
+                        self.ion_kinds
+                            .iter()
+                            .flat_map(|kind| IonSeries::new(peptide, *kind).enumerate())
+                            .filter(|(ion_idx, ion)| {
+                                // Don't store b1, b2, y1, y2 ions for preliminary scoring
+
+                                match ion.kind {
+                                    Kind::A | Kind::B | Kind::C => {
+                                        (ion_idx + 1) > self.min_ion_index
+                                    }
+                                    Kind::X | Kind::Y | Kind::Z => {
+                                        peptide.sequence.len().saturating_sub(1) - ion_idx
+                                            > self.min_ion_index
+                                    }
+                                }
+                            })
+                            .map(move |(_, ion)| Theoretical {
+                                peptide_index: PeptideIx(idx as u32),
+                                fragment_mz: ion.monoisotopic_mass,
+                            })
+                    }),
+            );
+            start = end;
+        }
         log::trace!("finalizing index");
 
         // Sort all of our theoretical fragments by m/z, from low to high
@@ -666,7 +795,7 @@ mod test {
         }
         // Ensure that this mod is uniquely called as the first protein
         assert_eq!(
-            peptides.last().unwrap().proteins,
+            peptides.last().unwrap().proteins.to_vec(),
             vec!["sp|AAAAA".to_string().into()]
         );
     }
