@@ -222,11 +222,14 @@ impl Parameters {
         log::trace!("modifying peptides");
         // Pre-size the target/decoy buffer so the parallel fill below never
         // grows by doubling (the realloc spike was the OOM-abort cause at
-        // full scale). The mass filter and decoy/target dedup only REMOVE
-        // peptides, so `decoy_factor * count_variants` is a true upper bound
-        // on the per-group output. Over-estimation reserves virtual address
-        // space (cheap on 64-bit) but does not inflate RSS, which tracks only
-        // the elements actually written.
+        // full scale). count_variants is the apply() output count, which the
+        // mass filter and decoy/target dedup only REMOVE from, so this is a
+        // true UPPER bound. It can over-count when a very restrictive mass
+        // window discards most mod variants; we therefore reserve with
+        // try_reserve_exact and fall back to growth-on-demand if the (virtual)
+        // reservation is rejected, so a pathological config degrades instead of
+        // aborting. The reservation costs only address space, not RSS, which
+        // tracks the elements actually written.
         let decoy_factor = if self.generate_decoys { 2 } else { 1 };
         let capacity_hint: usize = digests
             .par_iter()
@@ -240,22 +243,25 @@ impl Parameters {
                     )
             })
             .sum();
-        log::info!(
-            "[PHASE] digest-capacity-hint | rss={:.2}GB | reserving {} peptide slots",
-            cp_rss_gb(),
-            capacity_hint
-        );
 
         // Materialise in chunks so the rayon collect's transient buffer (a
         // per-thread LinkedList<Vec<Peptide>> that a single .collect() over all
         // groups would grow to the FULL peptide-set size) is bounded to one
         // chunk. Each chunk's variants are par_extend-ed into the pre-sized
-        // `target_decoys`, which never re-allocates because we reserved an upper
-        // bound up front. Peak ≈ final Vec + one chunk, not final + full
-        // transient. Chunk order does not affect output: reorder_peptides()
-        // sorts + dedups (with a canonical protein sort) before PeptideIx is
-        // assigned, so the result depends only on the peptide multiset.
-        let mut target_decoys: Vec<Peptide> = Vec::with_capacity(capacity_hint);
+        // `target_decoys`, which does not re-allocate while filling because we
+        // reserved an upper bound up front. Peak ≈ final Vec + one chunk, not
+        // final + full transient. Chunk order does not affect output:
+        // reorder_peptides() sorts + dedups (with a canonical protein sort)
+        // before PeptideIx is assigned, so the result depends only on the
+        // peptide multiset.
+        let mut target_decoys: Vec<Peptide> = Vec::new();
+        let reserved = target_decoys.try_reserve_exact(capacity_hint).is_ok();
+        log::info!(
+            "[PHASE] digest-capacity-hint | rss={:.2}GB | {} peptide slots ({})",
+            cp_rss_gb(),
+            capacity_hint,
+            if reserved { "reserved" } else { "rejected, growing on demand" }
+        );
         const DIGEST_CHUNK_GROUPS: usize = 1 << 20; // ~1.05M groups / chunk
         let mut digests_iter = digests.into_iter();
         loop {
@@ -355,22 +361,33 @@ impl Parameters {
         // Note that multiple charge states are actually handled by
         // [`SpectrumProcessor`] or during scoring - all theoretical
         // fragments are monoisotopic/uncharged
-        // Each ion series over a length-L peptide yields at most L-1 ions; the
-        // min_ion_index filter only removes more. So `ion_kinds * seq.len()` is
-        // a true upper bound per peptide — pre-size to avoid the doubling-grow
-        // transient on this (large) fragment Vec, same as the peptide buffer.
-        let fragment_capacity: usize = target_decoys
+        // Each ion series over a length-L peptide yields exactly L-1 ions
+        // (IonSeries stops at idx == len-1), and the min_ion_index filter keeps
+        // exactly (L-1 - min_ion_index) of them per kind (both the b/y branches
+        // reduce to the same count). So this is the EXACT fragment count, not an
+        // upper bound — no over-reservation even when min_ion_index exceeds the
+        // peptide lengths (the term saturates to 0). try_reserve_exact falls
+        // back to growth-on-demand rather than aborting on genuine OOM.
+        let fragment_count: usize = target_decoys
             .par_iter()
-            .map(|peptide| self.ion_kinds.len() * peptide.sequence.len())
+            .map(|peptide| {
+                let per_kind = peptide
+                    .sequence
+                    .len()
+                    .saturating_sub(1)
+                    .saturating_sub(self.min_ion_index);
+                self.ion_kinds.len() * per_kind
+            })
             .sum();
         // Same chunking as peptide materialisation: a single .collect() over all
         // peptides would grow a transient buffer to the FULL fragment-set size
         // (~1.5B Theoretical at full scale). Chunk over peptide index ranges so
-        // the transient is bounded to one chunk; par_extend into the pre-sized,
-        // never-reallocating `fragments`. PeptideIx is the global peptide index
-        // (start + local), so fragments are tagged identically to the monolithic
-        // build; the subsequent global sort makes emission order irrelevant.
-        let mut fragments: Vec<Theoretical> = Vec::with_capacity(fragment_capacity);
+        // the transient is bounded to one chunk; par_extend into the pre-sized
+        // `fragments`. PeptideIx is the global peptide index (start + local), so
+        // fragments are tagged identically to the monolithic build; the
+        // subsequent global sort makes emission order irrelevant.
+        let mut fragments: Vec<Theoretical> = Vec::new();
+        let _ = fragments.try_reserve_exact(fragment_count);
         const FRAG_CHUNK_PEPTIDES: usize = 1 << 22; // ~4.2M peptides / chunk
         let n_peptides = target_decoys.len();
         let mut start = 0;
