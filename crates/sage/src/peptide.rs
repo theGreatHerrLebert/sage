@@ -49,8 +49,19 @@ impl Mods {
 
     /// Set residue `i` to `mass` **iff** it is currently unmodified. Mirrors the
     /// historical `if modifications[i] == 0.0 { modifications[i] = mass }` guard.
-    /// `mass` must be nonzero (zero-mass mods are rejected at config validation).
+    ///
+    /// Self-enforces the canonical invariant: a zero `mass` is a no-op (never
+    /// stored), so `Mods` can never hold an explicit-zero entry that would make
+    /// derived `PartialEq` diverge from dense equality during dedup. (Config
+    /// validation also rejects zero-mass mods; this guard is belt-and-suspenders.)
     pub fn set_if_unmodified(&mut self, i: usize, mass: f32) {
+        if mass == 0.0 {
+            return;
+        }
+        debug_assert!(
+            i <= u16::MAX as usize,
+            "residue index {i} exceeds u16; max peptide length must be <= 65535"
+        );
         let key = i as u16;
         match self.0.binary_search_by(|(idx, _)| idx.cmp(&key)) {
             Ok(_) => {} // already modified — no-op
@@ -87,8 +98,14 @@ impl Mods {
         dense
     }
 
-    /// Build the canonical sparse form from a dense vector (drops zeros).
+    /// Build the canonical sparse form from a dense vector (drops zeros, which
+    /// also drops `-0.0` since `-0.0 != 0.0` is false).
     pub fn from_dense(dense: &[f32]) -> Self {
+        debug_assert!(
+            dense.len() <= u16::MAX as usize + 1,
+            "dense mod length {} exceeds u16 index range",
+            dense.len()
+        );
         let mut v: SmallVec<[(u16, f32); 2]> = SmallVec::new();
         for (i, &m) in dense.iter().enumerate() {
             if m != 0.0 {
@@ -644,6 +661,16 @@ mod test {
         assert_eq!(m.mass_at(2), 10.0);
         m.set_if_unmodified(0, -17.0); // negative mass (pyro-glu) must be supported + sorted
         assert_eq!(m.to_dense(3), vec![-17.0, 0.0, 10.0]);
+    }
+
+    #[test]
+    fn mods_zero_mass_never_stored() {
+        // Self-enforcing canonical invariant: a 0.0 set is a no-op, so it can
+        // never break derived-PartialEq dedup against an unmodified peptide.
+        let mut m = Mods::default();
+        m.set_if_unmodified(1, 0.0);
+        assert!(m.is_empty(), "zero-mass set must not create an entry");
+        assert_eq!(m, Mods::default());
     }
 
     #[quickcheck_macros::quickcheck]
