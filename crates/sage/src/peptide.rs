@@ -1021,6 +1021,3 @@ mod test {
 }
 
 
-#[cfg(test)]
-mod size_probe2 { use super::*;
-  #[test] fn s(){ eprintln!("PEPTIDE_SIZE={} MODS_SIZE={}", std::mem::size_of::<Peptide>(), std::mem::size_of::<Mods>()); }}
