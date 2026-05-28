@@ -314,57 +314,7 @@ impl Peptide {
     }
 
     fn push_resi(&self, acc: &mut Vec<(Site, f32)>, target: ModificationSpecificity, mass: f32) {
-        match (target, self.position) {
-            (ModificationSpecificity::PeptideN(None), _) => acc.push((Site::Nterm, mass)),
-            (ModificationSpecificity::PeptideN(Some(resi)), _)
-            if resi == *self.sequence.first().unwrap_or(&0) =>
-                {
-                    acc.push((Site::Sequence(0), mass))
-                }
-            (ModificationSpecificity::PeptideC(None), _) => acc.push((Site::Cterm, mass)),
-            (ModificationSpecificity::PeptideC(Some(resi)), _)
-            if resi == *self.sequence.last().unwrap_or(&0) =>
-                {
-                    acc.push((
-                        Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
-                        mass,
-                    ))
-                }
-            (ModificationSpecificity::ProteinN(None), Position::Nterm | Position::Full) => {
-                acc.push((Site::Nterm, mass))
-            }
-            (ModificationSpecificity::ProteinN(Some(resi)), Position::Nterm | Position::Full)
-            if resi == *self.sequence.first().unwrap_or(&0) =>
-                {
-                    acc.push((Site::Sequence(0), mass))
-                }
-            (ModificationSpecificity::ProteinC(None), Position::Cterm | Position::Full) => {
-                acc.push((Site::Cterm, mass))
-            }
-            (ModificationSpecificity::ProteinC(Some(resi)), Position::Cterm | Position::Full)
-            if resi == *self.sequence.last().unwrap_or(&0) =>
-                {
-                    acc.push((
-                        Site::Sequence(self.sequence.len().saturating_sub(1) as u32),
-                        mass,
-                    ))
-                }
-            (ModificationSpecificity::Residue(resi), _) => {
-                acc.extend(
-                    self.sequence
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, residue)| {
-                            if resi == *residue {
-                                Some((Site::Sequence(idx as u32), mass))
-                            } else {
-                                None
-                            }
-                        }),
-                );
-            }
-            _ => {}
-        }
+        discover_mod_sites(&self.sequence, self.position, acc, target, mass);
     }
 
     fn static_mods(&mut self, target: ModificationSpecificity, mass: f32) {
@@ -541,6 +491,100 @@ impl Peptide {
         }
         pep
     }
+}
+
+/// Site-discovery for a variable/static modification target, factored out of
+/// `Peptide::push_resi` so it can be driven from just a sequence + position
+/// (e.g. the digest count pass) without building a full `Peptide`.
+fn discover_mod_sites(
+    sequence: &[u8],
+    position: Position,
+    acc: &mut Vec<(Site, f32)>,
+    target: ModificationSpecificity,
+    mass: f32,
+) {
+    match (target, position) {
+        (ModificationSpecificity::PeptideN(None), _) => acc.push((Site::Nterm, mass)),
+        (ModificationSpecificity::PeptideN(Some(resi)), _)
+            if resi == *sequence.first().unwrap_or(&0) =>
+        {
+            acc.push((Site::Sequence(0), mass))
+        }
+        (ModificationSpecificity::PeptideC(None), _) => acc.push((Site::Cterm, mass)),
+        (ModificationSpecificity::PeptideC(Some(resi)), _)
+            if resi == *sequence.last().unwrap_or(&0) =>
+        {
+            acc.push((
+                Site::Sequence(sequence.len().saturating_sub(1) as u32),
+                mass,
+            ))
+        }
+        (ModificationSpecificity::ProteinN(None), Position::Nterm | Position::Full) => {
+            acc.push((Site::Nterm, mass))
+        }
+        (ModificationSpecificity::ProteinN(Some(resi)), Position::Nterm | Position::Full)
+            if resi == *sequence.first().unwrap_or(&0) =>
+        {
+            acc.push((Site::Sequence(0), mass))
+        }
+        (ModificationSpecificity::ProteinC(None), Position::Cterm | Position::Full) => {
+            acc.push((Site::Cterm, mass))
+        }
+        (ModificationSpecificity::ProteinC(Some(resi)), Position::Cterm | Position::Full)
+            if resi == *sequence.last().unwrap_or(&0) =>
+        {
+            acc.push((
+                Site::Sequence(sequence.len().saturating_sub(1) as u32),
+                mass,
+            ))
+        }
+        (ModificationSpecificity::Residue(resi), _) => {
+            acc.extend(sequence.iter().enumerate().filter_map(|(idx, residue)| {
+                if resi == *residue {
+                    Some((Site::Sequence(idx as u32), mass))
+                } else {
+                    None
+                }
+            }));
+        }
+        _ => {}
+    }
+}
+
+/// Number of peptides `apply()` would return for a peptide with this
+/// `sequence`/`position`, computed WITHOUT allocating any of them. Mirrors the
+/// `apply()` else-branch exactly (same site discovery, same
+/// `combinations(n).filter(no_duplicates)` plus the per-combination
+/// distinct-site set check) so it is provably equal to `apply(..).len()`.
+/// Used to pre-size the digest buffer and avoid the doubling-realloc spike.
+/// Static mods never change the count, so they are not consulted here.
+pub fn count_variants(
+    sequence: &[u8],
+    position: Position,
+    variable_mods: &[(ModificationSpecificity, f32)],
+    combinations: usize,
+) -> usize {
+    if variable_mods.is_empty() {
+        return 1;
+    }
+    let mut mods = Vec::new();
+    for (residue, mass) in variable_mods.iter() {
+        discover_mod_sites(sequence, position, &mut mods, *residue, *mass);
+    }
+    // The base (unmodified) clone, then one per valid combination.
+    let mut count = 1usize;
+    for n in 1..=combinations {
+        'next: for combination in mods.iter().combinations(n).filter(no_duplicates) {
+            let mut set = FnvHashSet::default();
+            for (site, _) in &combination {
+                if !set.insert(*site) {
+                    continue 'next;
+                }
+            }
+            count += 1;
+        }
+    }
+    count
 }
 
 fn no_duplicates(combination: &Vec<&(Site, f32)>) -> bool {
@@ -973,6 +1017,59 @@ mod test {
             .collect::<Vec<_>>();
 
         assert_eq!(peptides, expected);
+    }
+
+    // E1 gate: count_variants() must equal apply(..).len() exactly, since it is
+    // used to pre-size the digest buffer. If it ever under-counts, the parallel
+    // fill would re-allocate (the spike we are trying to remove) or worse.
+    #[test]
+    fn count_variants_matches_apply_len() {
+        use ModificationSpecificity::*;
+        let static_mods = HashMap::default();
+
+        let sequences = [
+            "AACAACAA",
+            "MPEPTIDEK",
+            "MSAGEK",
+            "END",
+            "ACDEFGHIKMNPQRSTVWY",
+            "K",
+            "CCCCCC",
+        ];
+
+        let mod_sets: [&[(ModificationSpecificity, f32)]; 5] = [
+            &[],
+            &[(Residue(b'C'), 16.0)],
+            &[(Residue(b'C'), 16.0), (Residue(b'M'), 16.0)],
+            // multiple variable mods competing for the same N-term slot
+            &[(PeptideN(None), 42.0), (PeptideN(Some(b'M')), 12.0)],
+            &[
+                (ProteinN(None), 42.0),
+                (ProteinC(None), 11.0),
+                (PeptideN(None), 12.0),
+                (PeptideC(None), 19.0),
+                (Residue(b'A'), 7.0),
+            ],
+        ];
+
+        for seq in sequences {
+            let peptide = Peptide::try_from(Digest {
+                sequence: seq.into(),
+                ..Default::default()
+            })
+            .unwrap();
+
+            for mods in mod_sets {
+                for combo in 0..=4 {
+                    let counted = count_variants(&peptide.sequence, peptide.position, mods, combo);
+                    let applied = peptide.clone().apply(mods, &static_mods, combo).len();
+                    assert_eq!(
+                        counted, applied,
+                        "count_variants mismatch: seq={seq:?} mods={mods:?} combo={combo}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

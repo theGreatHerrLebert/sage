@@ -2693,6 +2693,7 @@ dependencies = [
  "rayon",
  "regex",
  "serde",
+ "smallvec",
 ]
 
 [[package]]
