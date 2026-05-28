@@ -13,6 +13,24 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use bincode::{Decode, Encode};
 
+/// Resident set size of this process in GB (Linux only; 0.0 elsewhere).
+/// Used for [PHASE] memory-profiling log lines in digest()/build().
+#[cfg(target_os = "linux")]
+fn cp_rss_gb() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|n| n.parse::<f64>().ok())
+        })
+        .map(|kb| kb / (1024.0 * 1024.0))
+        .unwrap_or(0.0)
+}
+#[cfg(not(target_os = "linux"))]
+fn cp_rss_gb() -> f64 { 0.0 }
+
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct EnzymeBuilder {
     /// How many missed cleavages to use
@@ -166,6 +184,11 @@ impl Parameters {
         // Generate all tryptic peptide sequences, including reversed (decoy)
         // and missed cleavages, if applicable.
         let digests = fasta.digest(&enzyme);
+        log::info!(
+            "[PHASE] digest-fasta-done | rss={:.2}GB | {} raw digests",
+            cp_rss_gb(),
+            digests.len()
+        );
 
         log::trace!("grouping digests");
         let start_num = digests.len();
@@ -190,6 +213,12 @@ impl Parameters {
                 targets.insert(digest.reference.sequence.clone().into_bytes());
             });
 
+        log::info!(
+            "[PHASE] digest-grouped-done | rss={:.2}GB | {} raw -> {} groups",
+            cp_rss_gb(),
+            start_num,
+            digests.len()
+        );
         log::trace!("modifying peptides");
         let mut target_decoys = digests
             .into_par_iter()
@@ -213,6 +242,11 @@ impl Parameters {
                     .filter(|peptide| !peptide.decoy || !targets.contains(&(peptide.sequence[..])))
             })
             .collect::<Vec<_>>();
+        log::info!(
+            "[PHASE] digest-peptides-materialized | rss={:.2}GB | {} peptides (post mod-apply + decoy-gen)",
+            cp_rss_gb(),
+            target_decoys.len()
+        );
 
         Self::reorder_peptides(&mut target_decoys);
 
