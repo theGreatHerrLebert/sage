@@ -10,7 +10,7 @@ use fnv::FnvHashSet;
 use itertools::Itertools;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
 
 /// Per-residue modification masses, stored **sparsely**: only the residue
 /// positions carrying a nonzero mass-delta, sorted ascending by index, with no
@@ -180,7 +180,10 @@ pub struct Peptide {
     /// Where is this peptide located in the protein?
     pub position: Position,
 
-    pub proteins: Vec<Arc<str>>,
+    /// Proteins this peptide maps to. Inline storage for the common
+    /// single-protein case; spills to the heap only for shared peptides
+    /// (populated during dedup in `reorder_peptides`).
+    pub proteins: SmallVec<[Arc<str>; 1]>,
 }
 
 impl Peptide {
@@ -558,7 +561,7 @@ impl TryFrom<DigestGroup> for Peptide {
 
     fn try_from(value: DigestGroup) -> Result<Self, Self::Error> {
         let mut pep = Peptide::try_from(value.reference)?;
-        pep.proteins = value.proteins;
+        pep.proteins = SmallVec::from_vec(value.proteins);
         Ok(pep)
     }
 }
@@ -591,7 +594,7 @@ impl TryFrom<Digest> for Peptide {
             cterm: None,
             missed_cleavages: value.missed_cleavages,
             semi_enzymatic: value.semi_enzymatic,
-            proteins: vec![value.protein],
+            proteins: smallvec![value.protein],
         })
     }
 }

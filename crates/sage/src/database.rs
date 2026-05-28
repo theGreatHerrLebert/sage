@@ -700,7 +700,7 @@ mod test {
         }
         // Ensure that this mod is uniquely called as the first protein
         assert_eq!(
-            peptides.last().unwrap().proteins,
+            peptides.last().unwrap().proteins.to_vec(),
             vec!["sp|AAAAA".to_string().into()]
         );
     }
