@@ -110,6 +110,19 @@ fn err(ctx: impl std::fmt::Display) -> PmsmsError {
     PmsmsError::Read(ctx.to_string())
 }
 
+// Read an integer parquet cell as u64/i64 regardless of signed/unsigned logical
+// type (the two bundle variants differ: unsigned int64 vs signed int64).
+#[cfg(feature = "parquet")]
+fn row_u64(row: &parquet::record::Row, i: usize) -> Result<u64, PmsmsError> {
+    use parquet::record::RowAccessor;
+    row.get_ulong(i).or_else(|_| row.get_long(i).map(|v| v as u64)).map_err(err)
+}
+#[cfg(feature = "parquet")]
+fn row_i64(row: &parquet::record::Row, i: usize) -> Result<i64, PmsmsError> {
+    use parquet::record::RowAccessor;
+    row.get_long(i).or_else(|_| row.get_ulong(i).map(|v| v as i64)).map_err(err)
+}
+
 fn limit() -> usize {
     std::env::var("SAGE_PMSMS_LIMIT").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
 }
@@ -143,20 +156,31 @@ impl PseudoMsMsReader {
 
         let file = std::fs::File::open(dir.join("precursors.parquet"))?;
         let reader = SerializedFileReader::new(file).map_err(err)?;
+
+        // Map column NAME -> field index. The two bundle variants order columns
+        // differently (and the reference carries ~40 columns), so never read by position.
+        let schema = reader.metadata().file_metadata().schema_descr();
+        let mut col = std::collections::HashMap::new();
+        for i in 0..schema.num_columns() {
+            col.insert(schema.column(i).name().to_string(), i);
+        }
+        let idx = |n: &str| col.get(n).copied().ok_or_else(|| err(format!("precursors.parquet missing column '{n}'")));
+        let (i_pidx, i_mz, i_rt, i_iim, i_ch, i_start, i_cnt) = (
+            idx("precursor_idx")?, idx("mz")?, idx("rt")?, idx("inv_ion_mobility")?,
+            idx("charges")?, idx("fragment_spectrum_start")?, idx("fragment_event_cnt")?,
+        );
         let lim = limit();
 
         let mut out = Vec::new();
-        // cols: 0 precursor_idx,1 mz,2 rt,3 inv_ion_mobility,4 charges,
-        //       5 fragment_spectrum_start,6 fragment_event_cnt
         for row in reader.get_row_iter(None).map_err(err)? {
             let row = row.map_err(err)?;
-            let pidx = row.get_ulong(0).map_err(err)?;
-            let mz = row.get_double(1).map_err(err)?;
-            let rt = row.get_double(2).map_err(err)?;
-            let iim = row.get_double(3).map_err(err)?;
-            let charge = row.get_long(4).map_err(err)?;
-            let start = row.get_ulong(5).map_err(err)? as usize;
-            let cnt = row.get_ulong(6).map_err(err)? as usize;
+            let pidx = row_u64(&row, i_pidx)?;
+            let mz = row.get_double(i_mz).map_err(err)?;
+            let rt = row.get_double(i_rt).map_err(err)?;
+            let iim = row.get_double(i_iim).map_err(err)?;
+            let charge = row_i64(&row, i_ch)?;
+            let start = row_u64(&row, i_start)? as usize;
+            let cnt = row_u64(&row, i_cnt)? as usize;
 
             let end = start.checked_add(cnt).filter(|&e| e <= n_peaks).ok_or_else(|| {
                 err(format!("precursor {pidx}: peak span {start}..+{cnt} exceeds {n_peaks}"))
@@ -245,20 +269,30 @@ fn build_spectrum(
     tof2mz: &[f64],
     n_tof: usize,
 ) -> Result<RawSpectrum, PmsmsError> {
+    // Drop zero-intensity peaks: they carry no signal, and a peptide matching
+    // only such peaks gives summed_intensity 0 -> average_ppm = 0/0 = NaN, which
+    // poisons Sage's LDA scatter matrix (-> heuristic fallback).
     let mut mz = Vec::with_capacity(tof.len());
-    for &t in tof {
+    let mut intensity: Vec<f32> = Vec::with_capacity(tof.len());
+    for (&t, &iv) in tof.iter().zip(inten) {
+        if iv == 0 {
+            continue;
+        }
         let ti = t as usize;
         if ti >= n_tof {
             return Err(err(format!("fragment tof {t} out of range for tof2mz (len {n_tof})")));
         }
         mz.push(tof2mz[ti] as f32);
+        intensity.push(iv as f32);
     }
-    let intensity: Vec<f32> = inten.iter().map(|&i| i as f32).collect();
     let total_ion_current = intensity.iter().sum();
 
     let mut precursor = Precursor::default();
     precursor.mz = prec_mz as f32;
-    precursor.charge = if charge <= 0 { None } else { Some(charge as u8) };
+    // sagepy-parity: leave charge unset so Sage searches the configured
+    // precursor_charge range, rather than locking to the deconvolved charge.
+    let _ = charge;
+    precursor.charge = None;
     precursor.inverse_ion_mobility = Some(iim as f32);
     // isolation_window left None: deconvolution assigned a single precursor m/z (narrow mode).
 
@@ -268,7 +302,7 @@ fn build_spectrum(
         id: pidx.to_string(),
         representation: Representation::Centroid, // REQUIRED: process_ms2 panics on Profile
         scan_start_time: (rt / 60.0) as f32,      // rt seconds -> minutes
-        ion_injection_time: 0.0,
+        ion_injection_time: rt as f32,
         total_ion_current,
         mz,
         intensity,
