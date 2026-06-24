@@ -8,6 +8,7 @@ pub enum FileFormat {
     MzML,
     MGF,
     TDF,
+    Pmsms,
     Unidentified,
 }
 
@@ -22,6 +23,7 @@ impl FileFormat {
             FileFormat::MzML => false,
             FileFormat::MGF => false,
             FileFormat::TDF => true,
+            FileFormat::Pmsms => false,
             FileFormat::Unidentified => false,
         }
     }
@@ -32,6 +34,8 @@ impl From<&str> for FileFormat {
         let path_lower = s.to_lowercase();
         if path_lower.ends_with(".mgf.gz") || path_lower.ends_with(".mgf") {
             FileFormat::MGF
+        } else if is_pmsms(&path_lower) {
+            FileFormat::Pmsms
         } else if is_bruker(&path_lower) {
             FileFormat::TDF
         } else if path_lower.ends_with(".mzml.gz") || path_lower.ends_with(".mzml") {
@@ -40,6 +44,10 @@ impl From<&str> for FileFormat {
             FileFormat::Unidentified
         }
     }
+}
+
+fn is_pmsms(path: &str) -> bool {
+    path.strip_suffix(std::path::MAIN_SEPARATOR).unwrap_or(path).ends_with(".pmsms")
 }
 
 const BRUKER_EXTENSIONS: [&str; 5] = [".d", ".tdf", ".tdf_bin", "ms2", "raw"];
@@ -67,8 +75,21 @@ pub fn read_spectra<S: AsRef<str>>(
         FileFormat::MzML => read_mzml(path, file_id, sn),
         FileFormat::MGF => read_mgf(path, file_id),
         FileFormat::TDF => read_tdf(path, file_id, bruker_processor, requires_ms1),
+        FileFormat::Pmsms => read_pmsms(path, file_id),
         FileFormat::Unidentified => panic!("Unable to get type for '{}'", path.as_ref()), // read_mzml(path, file_id, sn),
     }
+}
+
+pub fn read_pmsms<S: AsRef<str>>(s: S, file_id: usize) -> Result<Vec<RawSpectrum>, Error> {
+    // pmsms bundles are local directories; the runner normalises local inputs to
+    // `file://` URLs, so convert such a URL back to a filesystem path here.
+    let raw = s.as_ref();
+    let local_path: Option<String> = crate::try_parse_url(raw)
+        .filter(|u| u.scheme() == "file")
+        .and_then(|u| u.to_file_path().ok())
+        .map(|p| p.to_string_lossy().into_owned());
+    let path: &str = local_path.as_deref().unwrap_or(raw);
+    Ok(crate::pmsms::PseudoMsMsReader.parse(path, file_id)?)
 }
 
 pub fn read_mzml<S: AsRef<str>>(
@@ -184,5 +205,7 @@ mod test {
         assert_eq!(FileFormat::from("foo.tdf"), FileFormat::TDF);
         assert_eq!(FileFormat::from("./tomato/foo.d"), FileFormat::TDF);
         assert_eq!(FileFormat::from("./tomato/foo.d/"), FileFormat::TDF);
+        assert_eq!(FileFormat::from("./run.pmsms"), FileFormat::Pmsms);
+        assert_eq!(FileFormat::from("./run.pmsms/"), FileFormat::Pmsms);
     }
 }

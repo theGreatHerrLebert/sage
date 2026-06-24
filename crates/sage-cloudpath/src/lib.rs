@@ -8,6 +8,7 @@ pub use url::Url;
 
 pub mod mgf;
 pub mod mzml;
+pub mod pmsms;
 pub mod tdf;
 pub mod util;
 pub use util::FileFormat;
@@ -167,6 +168,8 @@ pub enum Error {
     TDF(#[from] timsrust::TimsRustError),
     #[error("MGF error: {0}")]
     MGF(#[from] mgf::MgfError),
+    #[error("pmsms error: {0}")]
+    Pmsms(#[from] pmsms::PmsmsError),
 }
 
 #[cfg(test)]
