@@ -31,6 +31,13 @@ pub struct DigestGroup {
 }
 
 pub fn group_digests(mut digests: Vec<Digest>) -> Vec<DigestGroup> {
+    // A protein (or whole FASTA) can digest to zero peptides when none survive
+    // the [min_len, max_len] filter; grouping nothing yields no groups. Return
+    // early so the `digests[0]` access below cannot panic on an empty input.
+    if digests.is_empty() {
+        return Vec::new();
+    }
+
     let mut groups = Vec::new();
     digests.sort_unstable_by(|a, b| {
         a.position
@@ -396,6 +403,27 @@ mod test {
         // // Make sure hashing a digest works
         let set = digests.drain(..).collect::<HashSet<_>>();
         assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn group_empty_digests() {
+        // Grouping zero digests must yield zero groups, not panic on `digests[0]`.
+        assert!(group_digests(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn group_digests_of_unyielding_protein() {
+        // A protein whose every peptide falls outside [min_len, max_len] digests
+        // to nothing; grouping the result must not panic (see group_digests).
+        let tryp = EnzymeParameters {
+            min_len: 7,
+            max_len: 30,
+            missed_cleavages: 2,
+            enzyme: Enzyme::new("KR", "P", true, false),
+        };
+        let digests = tryp.digest("MAK", Arc::default());
+        assert!(digests.is_empty());
+        assert!(group_digests(digests).is_empty());
     }
 
     #[test]
