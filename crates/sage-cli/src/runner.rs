@@ -17,6 +17,7 @@ use sage_core::scoring::{Feature, Scorer};
 use sage_core::spectrum::{MS1Spectra, ProcessedSpectrum, RawSpectrum, SpectrumProcessor};
 use sage_core::tmt::TmtQuant;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 // HTML report specific imports
 use maud::{html, PreEscaped};
@@ -29,6 +30,8 @@ pub struct Runner {
     pub database: IndexedDatabase,
     pub parameters: Search,
     start: Instant,
+    /// Total MS2 spectra searched (summed over all chunks), reported in telemetry
+    spectra_searched: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -119,6 +122,7 @@ impl Runner {
                         database: IndexedDatabase::default(),
                         parameters: parameters.clone(),
                         start,
+                        spectra_searched: AtomicUsize::new(0),
                     };
                     let peptides = mini_runner.prefilter_peptides(parallel, fasta);
                     parameters.database.clone().build_from_peptides(peptides)
@@ -136,6 +140,7 @@ impl Runner {
             database,
             parameters,
             start,
+            spectra_searched: AtomicUsize::new(0),
         })
     }
 
@@ -327,6 +332,7 @@ impl Runner {
         let prev = counter.load(Ordering::Relaxed);
         let rate = prev * 1000 / (duration + 1);
         log::info!("- search:  {:8} ms ({} spectra/s)", duration, rate);
+        self.spectra_searched.fetch_add(prev, Ordering::Relaxed);
         features
     }
 
@@ -689,6 +695,7 @@ impl Runner {
             self.parameters,
             self.database.peptides.len(),
             self.database.fragments.len(),
+            self.spectra_searched.load(std::sync::atomic::Ordering::Relaxed),
             parquet,
             run_time,
         );
